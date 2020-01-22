@@ -100,6 +100,8 @@ class Workflow(Base, Timestamp):
     run_stopped_at = Column(DateTime)
     run_number = Column(Integer)
     job_progress = Column(JSONType, default=dict)
+    restart = Column(Boolean, default=False)
+    restart_info = Column(JSONType, default=list)
     # job_progress = {
     #  jobs_total = {total: job_number}
     #  jobs_running = {job_ids: [], total: c}
