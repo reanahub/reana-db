@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2018 CERN.
+# Copyright (C) 2018, 2019, 2020 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -18,7 +18,7 @@ from .config import SQLALCHEMY_DATABASE_URI
 
 from reana_db.models import Base  # isort:skip  # noqa
 
-engine = create_engine(SQLALCHEMY_DATABASE_URI)
+engine = create_engine(SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
 Session = scoped_session(sessionmaker(autocommit=False,
                                       autoflush=False,
                                       bind=engine))
