@@ -124,6 +124,30 @@ def test_workflow_retention_rules(db, session, new_user):
     assert "duplicate key value violates unique constraint" in e.value.args[0]
 
 
+# def _test_when_workflows_delete_workspace_retention_rules_inactivated(
+#     db, session, new_user
+# ):
+#     retention_rules = [{"workspace_files": "**/*.root", "retention_days": 1}]
+#     workflow = Workflow(
+#         id_=str(uuid4()),
+#         name="workflow",
+#         owner_id=new_user.id_,
+#         reana_specification=[],
+#         type_="serial",
+#         logs="",
+#     )
+#     session.add(workflow)
+#     session.commit()
+#
+#     workflow.set_workspace_retention_rules(retention_rules)
+#     workflow.status = RunStatus.deleted
+#     session.add(workflow)
+#     session.commit()
+#
+#     for rule in workflow.retention_rules.all():
+#         assert rule.status == WorkspaceRetentionRuleStatus.inactive
+
+
 @mock.patch(
     "reana_commons.utils.get_disk_usage", return_value=[{"size": {"raw": "128"}}]
 )

@@ -771,6 +771,7 @@ def workflow_status_change_listener(workflow, new_status, old_status, initiator)
         _update_cpu_quota(workflow)
         _update_disk_quota(workflow)
     elif new_status in [RunStatus.deleted]:
+        workflow.inactivate_workspace_retention_rules()
         _update_disk_quota(workflow)
 
     return new_status
