@@ -11,8 +11,8 @@
 from __future__ import absolute_import
 
 import enum
-import math
 import logging
+import math
 import uuid
 from datetime import datetime
 from functools import reduce
@@ -26,6 +26,21 @@ from reana_commons.config import (
 )
 from reana_commons.errors import REANAValidationError
 from reana_commons.utils import get_disk_usage
+from reana_db.config import (
+    DB_SECRET_KEY,
+    DEFAULT_QUOTA_LIMITS,
+    DEFAULT_QUOTA_RESOURCES,
+    LIMIT_RESTARTS,
+    WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY,
+)
+from reana_db.utils import (
+    build_workspace_path,
+    store_workflow_disk_quota,
+    update_users_cpu_quota,
+    update_users_disk_quota,
+    update_workflow_cpu_quota,
+    update_workspace_retention_rules,
+)
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -42,30 +57,13 @@ from sqlalchemy import (
     func,
     or_,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
 from sqlalchemy_utils import EncryptedType, JSONType, UUIDType
 from sqlalchemy_utils.models import Timestamp
 from sqlalchemy_utils.types.encrypted.encrypted_type import AesEngine
-from sqlalchemy.dialects.postgresql import ARRAY
-
-from reana_db.config import (
-    DB_SECRET_KEY,
-    DEFAULT_QUOTA_LIMITS,
-    DEFAULT_QUOTA_RESOURCES,
-    LIMIT_RESTARTS,
-    WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY,
-)
-from reana_db.utils import (
-    build_workspace_path,
-    store_workflow_disk_quota,
-    update_users_cpu_quota,
-    update_users_disk_quota,
-    update_workflow_cpu_quota,
-    update_workspace_retention_rules,
-)
-
 
 Base = declarative_base()
 
@@ -147,6 +145,12 @@ class User(Base, Timestamp, QuotaBase):
     username = Column(String(length=255))
     tokens = relationship("UserToken", backref="user_", lazy="dynamic")
     workflows = relationship("Workflow", backref="user_", lazy="dynamic")
+    shared_workflows = relationship(
+        "Workflow",
+        secondary="__reana.user_workflow",
+        backref="shared_users",
+        lazy="dynamic",
+    )
     audit_logs = relationship("AuditLog", backref="user_")
 
     def __init__(self, access_token=None, **kwargs):
@@ -1151,3 +1155,28 @@ class QuotaHealth(enum.Enum):
     healthy = 0
     warning = 1
     critical = 2
+
+
+class AccessType(enum.Enum):
+    """Enumeration of access types."""
+
+    read = 0
+
+
+class UserWorkflow(Base):
+    """UserWorkflow table."""
+
+    __tablename__ = "user_workflow"
+    __table_args__ = {"schema": "__reana"}
+
+    workflow_id = Column(UUIDType, ForeignKey("__reana.workflow.id_"), primary_key=True)
+    user_id = Column(UUIDType, ForeignKey("__reana.user_.id_"), primary_key=True)
+    access_type = Column(Enum(AccessType), default=AccessType.read, nullable=False)
+    message = Column(Text)
+    valid_until = Column(DateTime)
+
+    user = relationship("User", backref="user_workflows")
+
+    def __repr__(self):
+        """User Workflow string representation."""
+        return "<UserWorkflow {} {}>".format(self.workflow_id, self.user_id)
