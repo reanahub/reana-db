@@ -13,15 +13,14 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import inspect, func
-from sqlalchemy.orm import defer
-from reana_commons.utils import get_disk_usage
 from reana_commons.errors import REANAMissingWorkspaceError
-
+from reana_commons.utils import get_disk_usage
 from reana_db.config import (
     PERIODIC_RESOURCE_QUOTA_UPDATE_POLICY,
     WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY,
 )
+from sqlalchemy import func, inspect
+from sqlalchemy.orm import defer
 
 
 def build_workspace_path(user_id, workflow_id=None, workspace_root_path=None):
@@ -52,7 +51,9 @@ def build_workspace_path(user_id, workflow_id=None, workspace_root_path=None):
     return workspace_path
 
 
-def _get_workflow_with_uuid_or_name(uuid_or_name, user_uuid):
+def _get_workflow_with_uuid_or_name(
+    uuid_or_name, user_uuid, include_shared_workflows=False
+):
     """Get Workflow from database with uuid or name.
 
     :param uuid_or_name: String representing a valid UUIDv4 or valid
@@ -70,7 +71,8 @@ def _get_workflow_with_uuid_or_name(uuid_or_name, user_uuid):
 
     :rtype: reana-db.models.Workflow
     """
-    from reana_db.models import Workflow
+
+    from reana_db.models import UserWorkflow, Workflow
 
     # Check existence
     if not uuid_or_name:
@@ -93,7 +95,7 @@ def _get_workflow_with_uuid_or_name(uuid_or_name, user_uuid):
     if is_uuid:
         # `uuid_or_name` is an UUIDv4.
         # Search with it since it is expected to be unique.
-        return _get_workflow_by_uuid(uuid_or_name, user_uuid)
+        return _get_workflow_by_uuid(uuid_or_name, user_uuid, include_shared_workflows)
 
     else:
         # `uuid_or_name` is not and UUIDv4. Expect it is a name.
@@ -119,13 +121,17 @@ def _get_workflow_with_uuid_or_name(uuid_or_name, user_uuid):
         except ValueError:
             # Couldn't split. Probably not a dot-separated string.
             #  -> Search with `uuid_or_name`
-            return _get_workflow_by_name(uuid_or_name, user_uuid)
+            return _get_workflow_by_name(
+                uuid_or_name, user_uuid, include_shared_workflows
+            )
 
         # Check if `run_number` was specified
         if not run_number:
             # No `run_number` specified.
             # -> Search by `workflow_name`
-            return _get_workflow_by_name(workflow_name, user_uuid)
+            return _get_workflow_by_name(
+                workflow_name, user_uuid, include_shared_workflows
+            )
 
         # `run_number` was specified.
         # Check `run_number` is valid.
@@ -136,42 +142,78 @@ def _get_workflow_with_uuid_or_name(uuid_or_name, user_uuid):
             # but it didn't contain a valid `run_number`.
             # Assume that this dot-separated string is the name of
             # the workflow and search with it.
-            return _get_workflow_by_name(uuid_or_name, user_uuid)
+            return _get_workflow_by_name(
+                uuid_or_name, user_uuid, include_shared_workflows
+            )
 
         # `run_number` is valid.
-        # Search by `run_number` since it is a primary key.
-        workflow = Workflow.query.filter(
-            Workflow.name == workflow_name,
-            Workflow.run_number == run_number,
-            Workflow.owner_id == user_uuid,
-        ).one_or_none()
+        # Search by `run_number` since it is a primary key.`
+        if include_shared_workflows:
+            workflow = (
+                Workflow.query.outerjoin(
+                    UserWorkflow, UserWorkflow.workflow_id == Workflow.id_
+                )
+                .filter(
+                    (Workflow.name == workflow_name)
+                    & (Workflow.run_number == run_number)
+                    & (
+                        (Workflow.owner_id == user_uuid)
+                        | (UserWorkflow.user_id == user_uuid)
+                    )
+                )
+                .one_or_none()
+            )
+        else:
+            workflow = Workflow.query.filter(
+                Workflow.name == workflow_name,
+                Workflow.run_number == run_number,
+                Workflow.owner_id == user_uuid,
+            ).one_or_none()
+
         if not workflow:
             raise ValueError(
-                "REANA_WORKON is set to {0}, but "
+                f"REANA_WORKON is set to {workflow_name}.{str(int(run_number))}, but "
                 "that workflow does not exist. "
                 "Please set your REANA_WORKON environment "
-                "variable appropriately.".format(workflow_name)
+                "variable appropriately."
             )
 
         return workflow
 
 
-def _get_workflow_by_name(workflow_name, user_uuid):
+def _get_workflow_by_name(workflow_name, user_uuid, include_shared_workflows=False):
     """From Workflows named as `workflow_name` the latest run_number.
 
     Only use when you are sure that workflow_name is not UUIDv4.
 
     :rtype: reana-db.models.Workflow
     """
-    from reana_db.models import Workflow
+    from reana_db.models import UserWorkflow, Workflow
 
-    workflow = (
-        Workflow.query.filter(
-            Workflow.name == workflow_name, Workflow.owner_id == user_uuid
+    if include_shared_workflows:
+        workflow = (
+            Workflow.query.outerjoin(
+                UserWorkflow, Workflow.id_ == UserWorkflow.workflow_id
+            )
+            .filter(
+                (Workflow.name == workflow_name)
+                & (
+                    (Workflow.owner_id == user_uuid)
+                    | (UserWorkflow.user_id == user_uuid)
+                )
+            )
+            .order_by(Workflow.run_number.desc())
+            .first()
         )
-        .order_by(Workflow.run_number.desc())
-        .first()
-    )
+    else:
+        workflow = (
+            Workflow.query.filter(
+                Workflow.name == workflow_name, Workflow.owner_id == user_uuid
+            )
+            .order_by(Workflow.run_number.desc())
+            .first()
+        )
+
     if not workflow:
         raise ValueError(
             "REANA_WORKON is set to {0}, but "
@@ -182,7 +224,7 @@ def _get_workflow_by_name(workflow_name, user_uuid):
     return workflow
 
 
-def _get_workflow_by_uuid(workflow_uuid, user_uuid):
+def _get_workflow_by_uuid(workflow_uuid, user_uuid, include_shared_workflows=False):
     """Get Workflow with UUIDv4.
 
     :param workflow_uuid: UUIDv4 of a Workflow.
@@ -191,11 +233,28 @@ def _get_workflow_by_uuid(workflow_uuid, user_uuid):
 
     :rtype: reana-db.models.Workflow
     """
-    from reana_db.models import Workflow
 
-    workflow = Workflow.query.filter(
-        Workflow.id_ == workflow_uuid, Workflow.owner_id == user_uuid
-    ).first()
+    from reana_db.models import UserWorkflow, Workflow
+
+    if include_shared_workflows:
+        workflow = (
+            Workflow.query.outerjoin(
+                UserWorkflow, Workflow.id_ == UserWorkflow.workflow_id
+            )
+            .filter(
+                (Workflow.id_ == workflow_uuid)
+                & (
+                    (Workflow.owner_id == user_uuid)
+                    | (UserWorkflow.user_id == user_uuid)
+                )
+            )
+            .first()
+        )
+    else:
+        workflow = Workflow.query.filter(
+            Workflow.id_ == workflow_uuid, Workflow.owner_id == user_uuid
+        ).first()
+
     if not workflow:
         raise ValueError(
             "REANA_WORKON is set to {0}, but "
@@ -315,11 +374,11 @@ def update_users_disk_quota(
     """
     from reana_db.database import Session
     from reana_db.models import (
-        Workflow,
-        WorkflowResource,
         ResourceType,
         User,
         UserResource,
+        Workflow,
+        WorkflowResource,
     )
 
     if not override_policy_checks and should_skip_quota_update(ResourceType.disk):
@@ -375,12 +434,7 @@ def update_workflow_cpu_quota(workflow) -> int:
     :return: Workflow running time in milliseconds if workflow has terminated, else 0.
     """
     from reana_db.database import Session
-
-    from reana_db.models import (
-        ResourceType,
-        UserResource,
-        WorkflowResource,
-    )
+    from reana_db.models import ResourceType, UserResource, WorkflowResource
 
     if should_skip_quota_update(ResourceType.cpu):
         return
