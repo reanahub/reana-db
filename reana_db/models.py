@@ -32,8 +32,8 @@ from sqlalchemy import (
     Column,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -448,7 +448,7 @@ class Workflow(Base, Timestamp, QuotaBase):
 
     id_ = Column(UUIDType, primary_key=True)
     name = Column(String(255))
-    status = Column(Enum(RunStatus), default=RunStatus.created)
+    status = Column(Enum(RunStatus), default=RunStatus.created, index=True)
     owner_id = Column(UUIDType, ForeignKey("__reana.user_.id_"))
     reana_specification = Column(JSONType)
     input_parameters = Column(JSONType)
@@ -488,8 +488,8 @@ class Workflow(Base, Timestamp, QuotaBase):
 
     __table_args__ = (
         UniqueConstraint(
-            "name",
             "owner_id",
+            "name",
             "run_number_major",
             "run_number_minor",
             name="_user_workflow_run_uc",
@@ -810,7 +810,6 @@ class Job(Base, Timestamp):
     """Job table."""
 
     __tablename__ = "job"
-    __table_args__ = {"schema": "__reana"}
 
     id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
     backend_job_id = Column(String(256))
@@ -828,6 +827,11 @@ class Job(Base, Timestamp):
     finished_at = Column(DateTime)
     prettified_cmd = Column(JSONType)
     job_name = Column(Text)
+
+    __table_args__ = (
+        Index("_workflow_uuid_created_desc_ix", "workflow_uuid", "created"),
+        {"schema": "__reana"},
+    )
 
 
 @event.listens_for(Job.status, "set")
