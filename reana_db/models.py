@@ -813,7 +813,11 @@ class Job(Base, Timestamp):
 
     id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
     backend_job_id = Column(String(256))
-    workflow_uuid = Column(UUIDType)
+    workflow_uuid = Column(
+        UUIDType,
+        ForeignKey("__reana.workflow.id_", name="_job_workflow_uuid_fk"),
+        nullable=False,
+    )
     status = Column(Enum(JobStatus), default=JobStatus.created)
     compute_backend = Column(String(30))
     cvmfs_mounts = Column(Text)
