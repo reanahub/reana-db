@@ -228,12 +228,22 @@ def _get_workflow_by_name(workflow_name, user_uuid, include_shared_workflows=Fal
         )
 
     if not workflow:
-        raise ValueError(
-            "REANA_WORKON is set to {0}, but "
-            "that workflow does not exist. "
-            "Please set your REANA_WORKON environment "
-            "variable appropriately.".format(workflow_name)
-        )
+        workflow = Workflow.query.filter_by(name=workflow_name).first()
+
+        if workflow:
+            raise PermissionError(
+                "You are unauthorised to perform this action on workflow {0}.".format(
+                    workflow_name
+                )
+            )
+        else:
+            raise ValueError(
+                "REANA_WORKON is set to {0}, but "
+                "that workflow does not exist. "
+                "Please set your REANA_WORKON environment "
+                "variable appropriately.".format(workflow_name)
+            )
+
     return workflow
 
 
@@ -269,12 +279,22 @@ def _get_workflow_by_uuid(workflow_uuid, user_uuid, include_shared_workflows=Fal
         ).first()
 
     if not workflow:
-        raise ValueError(
-            "REANA_WORKON is set to {0}, but "
-            "that workflow does not exist. "
-            "Please set your REANA_WORKON environment "
-            "variable appropriately.".format(workflow_uuid)
-        )
+        workflow = Workflow.query.filter_by(id_=workflow_uuid).first()
+
+        if workflow:
+            raise PermissionError(
+                "You are unauthorised to perform this action on workflow {0}.".format(
+                    workflow_uuid
+                )
+            )
+        else:
+            raise ValueError(
+                "REANA_WORKON is set to {0}, but "
+                "that workflow does not exist. "
+                "Please set your REANA_WORKON environment "
+                "variable appropriately.".format(workflow_uuid)
+            )
+
     return workflow
 
 
