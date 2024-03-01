@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.9.4](https://github.com/reanahub/reana-db/compare/0.9.3...0.9.4) (2024-03-01)
+
+
+### Code refactoring
+
+* **docs:** move from reST to Markdown ([#225](https://github.com/reanahub/reana-db/issues/225)) ([b48eb55](https://github.com/reanahub/reana-db/commit/b48eb55f7a1b1bbdde0e0a458852349a439a511e))
+
+
+### Code style
+
+* **black:** format with black v24 ([#224](https://github.com/reanahub/reana-db/issues/224)) ([cc60522](https://github.com/reanahub/reana-db/commit/cc6052242fd14cf3413b793d0aa32a24871fe1b1))
+
+
+### Continuous integration
+
+* **commitlint:** addition of commit message linter ([#218](https://github.com/reanahub/reana-db/issues/218)) ([ee0f7e5](https://github.com/reanahub/reana-db/commit/ee0f7e5e106e0be619779bfa2133415feecc323b))
+* **commitlint:** allow release commit style ([#229](https://github.com/reanahub/reana-db/issues/229)) ([adf15d7](https://github.com/reanahub/reana-db/commit/adf15d7c6457eddadc3da1aa8b95b74cfc1239fb))
+* **commitlint:** check for the presence of concrete PR number ([#223](https://github.com/reanahub/reana-db/issues/223)) ([3d513f6](https://github.com/reanahub/reana-db/commit/3d513f6cda44e9e40b3c8f3967fcb87d113287ec))
+* **pytest:** move to PostgreSQL 14.10 ([#226](https://github.com/reanahub/reana-db/issues/226)) ([4dac889](https://github.com/reanahub/reana-db/commit/4dac88953754c0810d3502e8e511ec90c27c2b43))
+* **release-please:** initial configuration ([#218](https://github.com/reanahub/reana-db/issues/218)) ([7c616d6](https://github.com/reanahub/reana-db/commit/7c616d67fac642656f56d37422ba69c4a8d4fa20))
+* **shellcheck:** fix exit code propagation ([#223](https://github.com/reanahub/reana-db/issues/223)) ([b62ee1e](https://github.com/reanahub/reana-db/commit/b62ee1e3be44628265bf5ada7e0b7eb88e283c00))
+
+
+### Documentation
+
+* **authors:** complete list of contributors ([#227](https://github.com/reanahub/reana-db/issues/227)) ([3fbcf65](https://github.com/reanahub/reana-db/commit/3fbcf65db735146d54078cae4c5b9c8968ead055))
+
 ## 0.9.3 (2023-12-01)
 
 - Changes the `Workflow` table to replace the `run_number` column with two new columns `run_number_major` and `run_number_minor` in order to allow for more than nine restarts of user workflows.
@@ -125,4 +152,3 @@
 - This package is a result of refactoring [reana-commons](https://reana-commons.readthedocs.io/).
 - Provides common REANA models.
 - Provides database connection logic.
-
