@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.95.0](https://github.com/reanahub/reana-db/compare/0.9.4...0.95.0) (2024-03-18)
+
+
+### Continuous integration
+
+* **actions:** update GitHub actions due to Node 16 deprecation ([#233](https://github.com/reanahub/reana-db/issues/233)) ([f418dfb](https://github.com/reanahub/reana-db/commit/f418dfba0b5b9c49039e7f64944104ed4685b78c))
+
+
+### Chores
+
+* **master:** release 0.95.0a1 ([ec7c5e5](https://github.com/reanahub/reana-db/commit/ec7c5e5801fb7954bc8b8e652674e64d67526838))
+
 ## [0.9.4](https://github.com/reanahub/reana-db/compare/0.9.3...0.9.4) (2024-03-01)
 
 
