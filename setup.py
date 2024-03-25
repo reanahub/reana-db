@@ -45,8 +45,8 @@ setup_requires = [
 install_requires = [
     "alembic>=1.4.2",
     "psycopg2-binary>=2.6.1",
-    "SQLAlchemy>=1.2.7,<1.4.0",
-    "SQLAlchemy-Utils[encrypted]>=0.36.8",
+    "SQLAlchemy>=1.2.7,<1.5.0",
+    "SQLAlchemy-Utils[encrypted]>=0.37.0",
     "reana-commons>=0.95.0a1,<0.96.0",
 ]
 

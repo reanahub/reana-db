@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023 CERN.
+# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023, 2024 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -158,7 +158,7 @@ class User(Base, Timestamp, QuotaBase):
     full_name = Column(String(length=255))
     username = Column(String(length=255))
     tokens = relationship("UserToken", backref="user_", lazy="dynamic")
-    workflows = relationship("Workflow", backref="user_", lazy="dynamic")
+    workflows = relationship("Workflow", backref="owner", lazy="dynamic")
     audit_logs = relationship("AuditLog", backref="user_")
 
     def __init__(self, access_token=None, **kwargs):
@@ -486,7 +486,6 @@ class Workflow(Base, Timestamp, QuotaBase):
     git_repo = Column(String(255))
     git_provider = Column(String(255))
     launcher_url = Column(String)
-    owner = relationship("User", backref="workflow")
     sessions = relationship(
         "InteractiveSession",
         secondary="__reana.workflow_session",
