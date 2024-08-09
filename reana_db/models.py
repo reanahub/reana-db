@@ -496,6 +496,7 @@ class Workflow(Base, Timestamp, QuotaBase):
     retention_rules = relationship(
         "WorkspaceRetentionRule", backref="workflow", lazy="dynamic"
     )
+    jobs = relationship("Job", backref="workflow", lazy="dynamic")
 
     __table_args__ = (
         UniqueConstraint(
@@ -823,7 +824,11 @@ class Job(Base, Timestamp):
 
     id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
     backend_job_id = Column(String(256))
-    workflow_uuid = Column(UUIDType)
+    workflow_uuid = Column(
+        UUIDType,
+        ForeignKey("__reana.workflow.id_"),
+        nullable=False,
+    )
     status = Column(Enum(JobStatus), default=JobStatus.created)
     compute_backend = Column(String(30))
     cvmfs_mounts = Column(Text)
