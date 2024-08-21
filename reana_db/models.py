@@ -708,6 +708,12 @@ class Workflow(Base, Timestamp, QuotaBase):
         )
         return pending_rules.first() is not None
 
+    def requires_dask(self):
+        """Check whether Dask is necessary to run the workflow."""
+        return (
+            self.reana_specification["workflow"].get("resources", {}).get("dask", False)
+        )
+
     def get_priority(self, cluster_memory):
         """Workflow priority when scheduling it.
 
