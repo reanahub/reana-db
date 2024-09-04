@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.95.0](https://github.com/reanahub/reana-db/compare/0.9.4...0.95.0) (2024-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **python:** drop support for Python 3.6 and 3.7
+
+### Build
+
+* **python:** add minimal `pyproject.toml` ([#237](https://github.com/reanahub/reana-db/issues/237)) ([de1e03b](https://github.com/reanahub/reana-db/commit/de1e03b7f81fd1a49b9c2abdc7c5b6d164fe1f37))
+* **python:** add support for SQLAlchemy 1.4 ([#234](https://github.com/reanahub/reana-db/issues/234)) ([f341b21](https://github.com/reanahub/reana-db/commit/f341b21f203225f9537073fe67ec42578db11f02)), closes [#228](https://github.com/reanahub/reana-db/issues/228)
+* **python:** drop support for Python 3.6 and 3.7 ([#235](https://github.com/reanahub/reana-db/issues/235)) ([16448cd](https://github.com/reanahub/reana-db/commit/16448cd8e319661ce73697e6c66d138e0728b228))
+* **python:** remove deprecated `pytest-runner` ([#237](https://github.com/reanahub/reana-db/issues/237)) ([09f2df8](https://github.com/reanahub/reana-db/commit/09f2df890be324841f3842cc73c8554b6be969a3))
+* **python:** use optional deps instead of `tests_require` ([#237](https://github.com/reanahub/reana-db/issues/237)) ([18302ea](https://github.com/reanahub/reana-db/commit/18302ea372e76f6c05e65625f921902cbfb51710))
+
+
+### Features
+
+* **models:** add workflow run sharing tables ([#216](https://github.com/reanahub/reana-db/issues/216)) ([4b78d63](https://github.com/reanahub/reana-db/commit/4b78d6365eabb4d168eed2d44e060baf37217fcf)), closes [#206](https://github.com/reanahub/reana-db/issues/206)
+* **utils:** add `include_shared_workflows` parameter ([#216](https://github.com/reanahub/reana-db/issues/216)) ([0f3c091](https://github.com/reanahub/reana-db/commit/0f3c0918f39dfb76dc6961a3c356557107c5b9f0))
+
+
+### Bug fixes
+
+* **models:** add missing foreign key to workflow_uuid of Job ([#214](https://github.com/reanahub/reana-db/issues/214)) ([5b41246](https://github.com/reanahub/reana-db/commit/5b41246e686b68d7b58295070fe08d1e6a0ed3fe)), closes [#210](https://github.com/reanahub/reana-db/issues/210)
+* **models:** remove duplicated User-Workflow relationship ([#234](https://github.com/reanahub/reana-db/issues/234)) ([a364bb0](https://github.com/reanahub/reana-db/commit/a364bb0a5db5bedf5c00b21e437ea8da1abd62df))
+
+
+### Continuous integration
+
+* **actions:** update GitHub actions due to Node 16 deprecation ([#233](https://github.com/reanahub/reana-db/issues/233)) ([f418dfb](https://github.com/reanahub/reana-db/commit/f418dfba0b5b9c49039e7f64944104ed4685b78c))
+* **actions:** upgrade to Ubuntu 24.04 and Python 3.12 ([#236](https://github.com/reanahub/reana-db/issues/236)) ([f37e58e](https://github.com/reanahub/reana-db/commit/f37e58e98853670fe29bebbde4046d3b9bf6bf21))
+* **commitlint:** improve checking of merge commits ([#236](https://github.com/reanahub/reana-db/issues/236)) ([67a7254](https://github.com/reanahub/reana-db/commit/67a72544e4e0abcfacdc6cd81e1267de959d82e7))
+* **pytest:** invoke `pytest` directly instead of `setup.py test` ([#237](https://github.com/reanahub/reana-db/issues/237)) ([6b23c4d](https://github.com/reanahub/reana-db/commit/6b23c4de09aea1758b2cffa62fbdd8a09ba0a150))
+
+
+### Chores
+
+* **master:** release 0.95.0a1 ([ec7c5e5](https://github.com/reanahub/reana-db/commit/ec7c5e5801fb7954bc8b8e652674e64d67526838))
+
 ## [0.9.4](https://github.com/reanahub/reana-db/compare/0.9.3...0.9.4) (2024-03-01)
 
 
