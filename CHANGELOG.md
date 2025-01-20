@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.6](https://github.com/reanahub/reana-db/compare/0.9.5...0.9.6) (2025-01-20)
+
+
+### Features
+
+* **models:** add service tables ([#241](https://github.com/reanahub/reana-db/issues/241)) ([f573cbd](https://github.com/reanahub/reana-db/commit/f573cbdf17fae20e8225a30726333931565fe670))
+
 ## [0.9.5](https://github.com/reanahub/reana-db/compare/0.9.4...0.9.5) (2024-11-26)
 
 
