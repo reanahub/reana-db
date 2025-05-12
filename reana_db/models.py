@@ -542,6 +542,7 @@ class Workflow(Base, Timestamp, QuotaBase):
     complexity = Column(ARRAY(BigInteger(), dimensions=2), default=[])
     type_ = Column(String(30))
     logs = Column(String)
+    metrics = Column(JSONType)
     run_started_at = Column(DateTime)
     run_finished_at = Column(DateTime)
     run_stopped_at = Column(DateTime)
