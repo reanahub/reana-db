@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.6](https://github.com/reanahub/reana-db/compare/0.9.5...0.9.6) (2025-06-27)
+
+
+### Features
+
+* **models:** add service tables ([#241](https://github.com/reanahub/reana-db/issues/241)) ([f573cbd](https://github.com/reanahub/reana-db/commit/f573cbdf17fae20e8225a30726333931565fe670))
+* **models:** add ServiceLogs table ([#248](https://github.com/reanahub/reana-db/issues/248)) ([8bfc203](https://github.com/reanahub/reana-db/commit/8bfc203028d3b3d9af191f5a064312aaa65ba0b7))
+
+
+### Continuous integration
+
+* **commitlint:** fix local running of commit linter on macOS ([#249](https://github.com/reanahub/reana-db/issues/249)) ([b13bb3b](https://github.com/reanahub/reana-db/commit/b13bb3bae824ee2eb39aa8328bbda111c1b80f75))
+
 ## [0.9.5](https://github.com/reanahub/reana-db/compare/0.9.4...0.9.5) (2024-11-26)
 
 
