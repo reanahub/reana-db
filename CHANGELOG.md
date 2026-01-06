@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.6](https://github.com/reanahub/reana-db/compare/0.9.5...0.9.6) (2026-01-06)
+
+
+### Features
+
+* **models:** add service tables ([#241](https://github.com/reanahub/reana-db/issues/241)) ([f573cbd](https://github.com/reanahub/reana-db/commit/f573cbdf17fae20e8225a30726333931565fe670))
+* **models:** add ServiceLogs table ([#248](https://github.com/reanahub/reana-db/issues/248)) ([8bfc203](https://github.com/reanahub/reana-db/commit/8bfc203028d3b3d9af191f5a064312aaa65ba0b7))
+
+
+### Continuous integration
+
+* **commitlint:** fix local running of commit linter on macOS ([#249](https://github.com/reanahub/reana-db/issues/249)) ([b13bb3b](https://github.com/reanahub/reana-db/commit/b13bb3bae824ee2eb39aa8328bbda111c1b80f75))
+* **runners:** upgrade CI runners to Ubuntu 22.04 ([#243](https://github.com/reanahub/reana-db/issues/243)) ([020c324](https://github.com/reanahub/reana-db/commit/020c324f2e631a34295492493bedb424c5e372a3))
+* **runners:** upgrade CI runners to Ubuntu 22.04 ([#243](https://github.com/reanahub/reana-db/issues/243)) ([1d929ba](https://github.com/reanahub/reana-db/commit/1d929ba779e66bd531b348ae60fac506a79ec96f))
+
 ## [0.9.5](https://github.com/reanahub/reana-db/compare/0.9.4...0.9.5) (2024-11-26)
 
 
