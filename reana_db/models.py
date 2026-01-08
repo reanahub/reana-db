@@ -178,6 +178,8 @@ class User(Base, Timestamp, QuotaBase):
         sync_backref=False,
     )
     audit_logs = relationship("AuditLog", backref="user_")
+    idp_issuer = Column(String(length=255))
+    idp_subject = Column(String(length=255))
 
     def __init__(self, access_token=None, **kwargs):
         """Initialize user model."""
