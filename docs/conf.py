@@ -206,3 +206,7 @@ texinfo_documents = [
         "Miscellaneous",
     ),
 ]
+
+nitpick_ignore = [
+    ("py:class", "datetime.datetime"),
+]

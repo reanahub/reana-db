@@ -10,6 +10,7 @@
 
 import os
 from distutils.util import strtobool
+from datetime import datetime
 
 from reana_commons.config import REANA_INFRASTRUCTURE_COMPONENTS_HOSTNAMES
 
@@ -75,6 +76,30 @@ DEFAULT_QUOTA_LIMITS = {
 }
 """Default CPU (in milliseconds) and disk (in bytes) quota limits."""
 
+
+def _get_optional_int_env(var_name):
+    value = os.getenv(var_name)
+    return int(float(value)) if value not in (None, "") else None
+
+
+def _get_optional_datetime_env(var_name):
+    """Parse optional datetime env var in ISO 8601 format."""
+    value = os.getenv(var_name)
+    return datetime.fromisoformat(value) if value else None
+
+
+DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED = bool(
+    strtobool(os.getenv("REANA_DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED", "false"))
+)
+"""Whether newly created users should receive a periodic CPU accounting policy."""
+
+DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS = _get_optional_int_env(
+    "REANA_DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS"
+)
+
+DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT = _get_optional_datetime_env(
+    "REANA_DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT"
+)
 
 policies = os.getenv("REANA_WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY")
 WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY = policies.split(",") if policies else []

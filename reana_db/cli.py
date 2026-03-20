@@ -16,11 +16,18 @@ import click
 from alembic import command
 from alembic import config as alembic_config
 from reana_commons.config import REANA_LOG_FORMAT, REANA_LOG_LEVEL
+from reana_db.config import (
+    DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT,
+    DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED,
+    DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS,
+)
 
 
 from reana_db.database import init_db
 from reana_db.models import Resource, ResourceType
 from reana_db.utils import (
+    get_current_quota_period_start_at_from_anchor,
+    get_default_quota_resource,
     change_key_encrypted_columns,
     update_users_cpu_quota,
     update_users_disk_quota,
@@ -294,3 +301,47 @@ def resource_usage_update() -> None:
 
     _resource_usage_update(ResourceType.disk)
     _resource_usage_update(ResourceType.cpu)
+
+
+@quota_group.command("init-periodic-defaults")
+def init_periodic_defaults() -> None:
+    """Backfill deployment default periodic CPU quota policy for existing users."""
+    from reana_db.database import Session
+    from reana_db.models import UserResource
+
+    if not (
+        DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED
+        and DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS
+        and DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT
+    ):
+        click.secho(
+            "Periodic CPU reset deployment defaults are not configured.",
+            fg="yellow",
+        )
+        return
+
+    cpu_resource = get_default_quota_resource(ResourceType.cpu.name)
+    current_period_start_at = get_current_quota_period_start_at_from_anchor(
+        anchor_at=DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT,
+        quota_period_months=DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS,
+    )
+
+    updated_rows = (
+        Session.query(UserResource)
+        .filter(UserResource.resource_id == cpu_resource.id_)
+        .filter(UserResource.quota_period_months.is_(None))
+        .update(
+            {
+                UserResource.quota_period_months: DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS,
+                UserResource.quota_period_anchor_at: DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT,
+                UserResource.quota_period_start_at: current_period_start_at,
+            },
+            synchronize_session=False,
+        )
+    )
+    Session.commit()
+
+    click.secho(
+        f"Initialised periodic CPU reset policy for {updated_rows} existing users.",
+        fg="green",
+    )
