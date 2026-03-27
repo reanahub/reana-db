@@ -17,4 +17,5 @@ The list of contributors in alphabetical order:
 - [Rokas Maciulaitis](https://orcid.org/0000-0003-1064-6967)
 - [Sinclert Perez](https://www.linkedin.com/in/sinclert)
 - [Tibor Simko](https://orcid.org/0000-0001-7202-5803)
+- [Tomas Ondrejka](https://www.linkedin.com/in/tomas-ondrejka/)
 - [Vladyslav Moisieienkov](https://orcid.org/0000-0001-9717-0775)
