@@ -453,16 +453,18 @@ def update_users_disk_quota(
         timer.count_event()
 
 
-def update_workflow_cpu_quota(workflow) -> int:
+def update_workflow_cpu_quota(workflow, override_policy_checks: bool = False) -> int:
     """Update workflow CPU quota based on started and finished/stopped times.
 
+    :param override_policy_checks: Whether to update the CPU quota without checking
+        the update policy.
     :return: Workflow running time in milliseconds if workflow has terminated, else 0.
     """
     from reana_db.database import Session
     from reana_db.models import ResourceType, UserResource, WorkflowResource
 
-    if should_skip_quota_update(ResourceType.cpu):
-        return
+    if not override_policy_checks and should_skip_quota_update(ResourceType.cpu):
+        return 0
 
     cpu_resource = get_default_quota_resource(ResourceType.cpu.name)
 
@@ -542,30 +544,23 @@ def get_current_quota_period_start_at_from_anchor(
 def _get_current_user_cpu_quota_period_start_at(
     user_resource_quota, now: Optional[datetime] = None
 ) -> Optional[datetime]:
-    """Return the current CPU quota period start for a user resource.
-
-    Use quota_period_start_at if already stored,
-    otherwise initialize it from quota_period_anchor_at.
-
-    If the anchored period is in the past, advance it by whole
-    quota_period_months intervals until it lands in the current window.
-    """
+    """Return the current CPU quota period start for a user resource."""
     if not user_resource_quota.quota_period_months:
         return None
 
     now = now or datetime.utcnow()
     period_months = user_resource_quota.quota_period_months
 
-    period_start_at = user_resource_quota.quota_period_start_at
-    if not period_start_at:
-        period_start_at = user_resource_quota.quota_period_anchor_at
-
-    if not period_start_at:
+    # Treat the stored value as the last known active window start and advance it
+    # until it reaches the current window. If the value is not set yet, derive the
+    # first window from the account creation time.
+    anchor_at = user_resource_quota.quota_period_start_at
+    if not anchor_at:
+        anchor_at = user_resource_quota.user.created
+    if not anchor_at:
         return None
 
-    return get_current_quota_period_start_at_from_anchor(
-        period_start_at, period_months, now
-    )
+    return get_current_quota_period_start_at_from_anchor(anchor_at, period_months, now)
 
 
 def _advance_user_cpu_quota_period_if_needed(
@@ -600,7 +595,7 @@ def _advance_user_cpu_quota_period_if_needed(
     return True
 
 
-def update_workflows_cpu_quota() -> None:
+def update_workflows_cpu_quota(override_policy_checks: bool = False) -> None:
     """Update the CPU quotas of all workflows in a more efficient way."""
     from reana_db.database import Session
     from reana_db.models import Workflow
@@ -618,11 +613,13 @@ def update_workflows_cpu_quota() -> None:
         Session.expunge(workflow)
     timer = Timer("Workflow CPU quota usage update", total=len(workflows))
     for workflow in workflows:
-        update_workflow_cpu_quota(workflow)
+        update_workflow_cpu_quota(
+            workflow, override_policy_checks=override_policy_checks
+        )
         timer.count_event()
 
 
-def update_users_cpu_quota(user=None) -> None:
+def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> None:
     """Update users CPU quota usage.
 
     For users with periodic CPU enabled, advance the active quota
@@ -631,6 +628,8 @@ def update_users_cpu_quota(user=None) -> None:
 
     :param user: User whose CPU quota will be updated. If None, applies to all users.
     :type user: reana_db.models.User
+    :param override_policy_checks: Whether to update the CPU quota without checking
+        the update policy.
     """
     from reana_db.database import Session
     from reana_db.models import (
@@ -643,7 +642,7 @@ def update_users_cpu_quota(user=None) -> None:
         WorkflowResource,
     )
 
-    if should_skip_quota_update(ResourceType.cpu):
+    if not override_policy_checks and should_skip_quota_update(ResourceType.cpu):
         return
 
     cpu_resource = get_default_quota_resource(ResourceType.cpu.name)
@@ -659,9 +658,11 @@ def update_users_cpu_quota(user=None) -> None:
         )
     timer_user = Timer("User CPU quota usage update", total=len(users))
     for user in users:
-        user_resource_quota = UserResource.query.filter_by(
-            user_id=user.id_, resource_id=cpu_resource.id_
-        ).first()
+        user_resource_quota = (
+            Session.query(UserResource)
+            .filter_by(user_id=user.id_, resource_id=cpu_resource.id_)
+            .first()
+        )
 
         if not user_resource_quota:
             timer_user.count_event()
@@ -804,7 +805,7 @@ def store_workflow_disk_quota(
     return workflow_resource
 
 
-def update_workflows_disk_quota() -> None:
+def update_workflows_disk_quota(override_policy_checks: bool = False) -> None:
     """Update the disk quotas of all workflows in a more efficient way."""
     from reana_db.database import Session
     from reana_db.models import Workflow
@@ -822,7 +823,9 @@ def update_workflows_disk_quota() -> None:
         Session.expunge(workflow)
     timer = Timer("Workflow disk quota usage update", total=len(workflows))
     for workflow in workflows:
-        store_workflow_disk_quota(workflow)
+        store_workflow_disk_quota(
+            workflow, override_policy_checks=override_policy_checks
+        )
         timer.count_event()
 
 

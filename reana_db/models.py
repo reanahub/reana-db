@@ -30,7 +30,6 @@ from reana_commons.utils import get_disk_usage
 import reana_db.config
 from reana_db.config import (
     DEFAULT_QUOTA_LIMITS,
-    DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT,
     DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED,
     DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS,
     DEFAULT_QUOTA_RESOURCES,
@@ -297,19 +296,17 @@ class User(Base, Timestamp, QuotaBase):
         resources = Session.query(Resource).all()
         for resource in resources:
             quota_period_months = None
-            quota_period_anchor_at = None
             quota_period_start_at = None
 
             if (
                 resource.type_ == ResourceType.cpu
                 and DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED
                 and DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS
-                and DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT
             ):
                 quota_period_months = DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS
-                quota_period_anchor_at = DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT
+                account_created_at = self.created or datetime.utcnow()
                 quota_period_start_at = get_current_quota_period_start_at_from_anchor(
-                    anchor_at=DEFAULT_QUOTA_CPU_PERIODIC_RESET_ANCHOR_AT,
+                    anchor_at=account_created_at,
                     quota_period_months=DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS,
                 )
 
@@ -320,7 +317,6 @@ class User(Base, Timestamp, QuotaBase):
                     quota_limit=DEFAULT_QUOTA_LIMITS[resource.type_.name],
                     quota_used=0,
                     quota_period_months=quota_period_months,
-                    quota_period_anchor_at=quota_period_anchor_at,
                     quota_period_start_at=quota_period_start_at,
                 )
             )
@@ -1291,7 +1287,6 @@ class UserResource(Base, Timestamp):
     quota_limit = Column(BigInteger())
     quota_used = Column(BigInteger())
     quota_period_months = Column(Integer, nullable=True)
-    quota_period_anchor_at = Column(DateTime, nullable=True)
     quota_period_start_at = Column(DateTime, nullable=True)
 
     user = relationship("User", backref="resources")
