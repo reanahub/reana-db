@@ -3,6 +3,44 @@
 
 # Changelog
 
+## [0.9.6](https://github.com/reanahub/reana-db/compare/0.9.5...0.9.6) (2026-04-29)
+
+
+### Build
+
+* **python:** upgrade to SQLAlchemy 2.x ([#257](https://github.com/reanahub/reana-db/issues/257)) ([20c6a1c](https://github.com/reanahub/reana-db/commit/20c6a1c11c01bcc2bb8086bb8cfe4c2991167b02))
+
+
+### Features
+
+* **models:** add service tables ([#241](https://github.com/reanahub/reana-db/issues/241)) ([f573cbd](https://github.com/reanahub/reana-db/commit/f573cbdf17fae20e8225a30726333931565fe670))
+* **models:** add ServiceLogs table ([#248](https://github.com/reanahub/reana-db/issues/248)) ([8bfc203](https://github.com/reanahub/reana-db/commit/8bfc203028d3b3d9af191f5a064312aaa65ba0b7))
+
+
+### Code refactoring
+
+* **models:** replace lazy="dynamic" with default loading ([#260](https://github.com/reanahub/reana-db/issues/260)) ([7639e9e](https://github.com/reanahub/reana-db/commit/7639e9ec6770f87e74f56936f7d7171f1e8d7847))
+
+
+### Code style
+
+* **python:** adapt code base to the new black version ([#253](https://github.com/reanahub/reana-db/issues/253)) ([6f1e3c1](https://github.com/reanahub/reana-db/commit/6f1e3c1f5fed6be5a975fceae4c6c8420c30a129))
+
+
+### Continuous integration
+
+* **commitlint:** fix local running of commit linter on macOS ([#249](https://github.com/reanahub/reana-db/issues/249)) ([b13bb3b](https://github.com/reanahub/reana-db/commit/b13bb3bae824ee2eb39aa8328bbda111c1b80f75))
+* **jsonlint:** add JSON linting checks ([#254](https://github.com/reanahub/reana-db/issues/254)) ([47b2ada](https://github.com/reanahub/reana-db/commit/47b2adac9a7705dde1577213d151366a6c3e95ae))
+* **markdownlint:** add Markdown linting checks ([#254](https://github.com/reanahub/reana-db/issues/254)) ([cc0a9f9](https://github.com/reanahub/reana-db/commit/cc0a9f91c09e002b537a33d82ff80bca5b674fb7))
+* **prettier:** add Prettier code formatting checks ([#254](https://github.com/reanahub/reana-db/issues/254)) ([114e1e3](https://github.com/reanahub/reana-db/commit/114e1e350d8b1737f371c72df4e58fa6a4f5bf0f))
+* **python:** pin setuptools below 81 ([#253](https://github.com/reanahub/reana-db/issues/253)) ([8b25e00](https://github.com/reanahub/reana-db/commit/8b25e0092e7709da889db04bb1907c4e2322601a))
+* **run-tests:** add usage help and refactor options ([#254](https://github.com/reanahub/reana-db/issues/254)) ([6d4223d](https://github.com/reanahub/reana-db/commit/6d4223d37d81b1336b37f537395531331a54ea5c))
+* **run-tests:** improve old DB container cleanup ([#259](https://github.com/reanahub/reana-db/issues/259)) ([4a4f889](https://github.com/reanahub/reana-db/commit/4a4f889518bab8b775b62287b83663a3791bb973))
+* **runners:** upgrade CI runners to Ubuntu 22.04 ([#243](https://github.com/reanahub/reana-db/issues/243)) ([020c324](https://github.com/reanahub/reana-db/commit/020c324f2e631a34295492493bedb424c5e372a3))
+* **runners:** upgrade CI runners to Ubuntu 22.04 ([#243](https://github.com/reanahub/reana-db/issues/243)) ([1d929ba](https://github.com/reanahub/reana-db/commit/1d929ba779e66bd531b348ae60fac506a79ec96f))
+* **shfmt:** add shfmt code formatting checks ([#254](https://github.com/reanahub/reana-db/issues/254)) ([4ef0d79](https://github.com/reanahub/reana-db/commit/4ef0d7946eed6e1d5429d84d7d9c771cdefea287))
+* **yamllint:** add YAML linting checks ([#254](https://github.com/reanahub/reana-db/issues/254)) ([5666b53](https://github.com/reanahub/reana-db/commit/5666b53c43c315fd7e4de656c0dfe10e41016760))
+
 ## [0.9.5](https://github.com/reanahub/reana-db/compare/0.9.4...0.9.5) (2024-11-26)
 
 ### Features
