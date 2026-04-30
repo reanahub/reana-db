@@ -76,6 +76,21 @@ DEFAULT_QUOTA_LIMITS = {
 """Default CPU (in milliseconds) and disk (in bytes) quota limits."""
 
 
+def _get_optional_int_env(var_name):
+    value = os.getenv(var_name)
+    return int(float(value)) if value not in (None, "") else None
+
+
+DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED = bool(
+    strtobool(os.getenv("REANA_DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED", "false"))
+)
+"""Whether newly created users should receive a periodic CPU accounting policy."""
+
+DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS = _get_optional_int_env(
+    "REANA_DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS"
+)
+"""Length of the default CPU accounting window in months for newly created users."""
+
 policies = os.getenv("REANA_WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY")
 WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY = policies.split(",") if policies else []
 """What quota types to update, if not specified all quotas will be calculated, if empty no quotas will be updated."""

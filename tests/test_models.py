@@ -8,14 +8,18 @@
 
 """REANA-DB models tests."""
 
+from datetime import datetime
 from uuid import uuid4
 
-import pytest
 import mock
+import pytest
 
+from reana_db import database
+import reana_db.models as models_module
 from reana_db.models import (
     ALLOWED_WORKFLOW_STATUS_TRANSITIONS,
     AuditLogAction,
+    Resource,
     ResourceUnit,
     ResourceType,
     JobStatus,
@@ -35,6 +39,100 @@ from reana_db.utils import (
     update_users_disk_quota,
     update_workspace_retention_rules,
 )
+
+
+def test_initialize_user_quota_limits_uses_user_created_for_period_start(monkeypatch):
+    """Test new users derive periodic CPU windows from their creation time."""
+    created_at = datetime(2026, 4, 1, 13, 6, 32, 992595)
+    cpu_resource = Resource(
+        id_=uuid4(),
+        name="processing time",
+        type_=ResourceType.cpu,
+        unit=ResourceUnit.milliseconds,
+    )
+    disk_resource = Resource(
+        id_=uuid4(),
+        name="shared storage",
+        type_=ResourceType.disk,
+        unit=ResourceUnit.bytes_,
+    )
+    resource_query = mock.MagicMock()
+    resource_query.all.return_value = [cpu_resource, disk_resource]
+    session = mock.MagicMock()
+    session.query.return_value = resource_query
+
+    monkeypatch.setattr(database, "Session", session)
+    monkeypatch.setattr(models_module, "DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED", True)
+    monkeypatch.setattr(models_module, "DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS", 3)
+    monkeypatch.setattr(models_module, "DEFAULT_QUOTA_LIMITS", {"cpu": 0, "disk": 0})
+    get_current_period_start = mock.Mock(return_value=created_at)
+    monkeypatch.setattr(
+        models_module,
+        "get_current_quota_period_start_at_from_anchor",
+        get_current_period_start,
+    )
+
+    user = models_module.User(email=f"{uuid4()}@reana.io", created=created_at)
+
+    cpu_user_resource = next(
+        resource
+        for resource in user.resources
+        if resource.resource_id == cpu_resource.id_
+    )
+    disk_user_resource = next(
+        resource
+        for resource in user.resources
+        if resource.resource_id == disk_resource.id_
+    )
+
+    assert cpu_user_resource.quota_period_months == 3
+    assert cpu_user_resource.quota_period_start_at == created_at
+    assert disk_user_resource.quota_period_months is None
+    assert disk_user_resource.quota_period_start_at is None
+    get_current_period_start.assert_called_once_with(
+        anchor_at=created_at, quota_period_months=3
+    )
+
+
+def test_initialize_user_quota_limits_falls_back_to_current_time(monkeypatch):
+    """Test new users without a stored creation time use the current time."""
+    current_time = datetime(2026, 4, 15, 8, 0, 0)
+    cpu_resource = Resource(
+        id_=uuid4(),
+        name="processing time",
+        type_=ResourceType.cpu,
+        unit=ResourceUnit.milliseconds,
+    )
+    resource_query = mock.MagicMock()
+    resource_query.all.return_value = [cpu_resource]
+    session = mock.MagicMock()
+    session.query.return_value = resource_query
+
+    class MockDatetime(datetime):
+        """Datetime helper returning a stable current timestamp."""
+
+        @classmethod
+        def utcnow(cls):
+            return current_time
+
+    monkeypatch.setattr(database, "Session", session)
+    monkeypatch.setattr(models_module, "DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED", True)
+    monkeypatch.setattr(models_module, "DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS", 3)
+    monkeypatch.setattr(models_module, "DEFAULT_QUOTA_LIMITS", {"cpu": 0, "disk": 0})
+    monkeypatch.setattr(models_module, "datetime", MockDatetime)
+    get_current_period_start = mock.Mock(return_value=current_time)
+    monkeypatch.setattr(
+        models_module,
+        "get_current_quota_period_start_at_from_anchor",
+        get_current_period_start,
+    )
+
+    user = models_module.User(email=f"{uuid4()}@reana.io")
+
+    assert user.resources[0].quota_period_start_at == current_time
+    get_current_period_start.assert_called_once_with(
+        anchor_at=current_time, quota_period_months=3
+    )
 
 
 def test_workflow_run_number_assignment(db, session, new_user):

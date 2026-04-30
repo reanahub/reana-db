@@ -16,11 +16,17 @@ import click
 from alembic import command
 from alembic import config as alembic_config
 from reana_commons.config import REANA_LOG_FORMAT, REANA_LOG_LEVEL
+from reana_db.config import (
+    DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED,
+    DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS,
+)
 
 
 from reana_db.database import init_db
 from reana_db.models import Resource, ResourceType
 from reana_db.utils import (
+    get_current_quota_period_start_at_from_anchor,
+    get_default_quota_resource,
     change_key_encrypted_columns,
     update_users_cpu_quota,
     update_users_disk_quota,
@@ -272,15 +278,15 @@ def resource_usage_update() -> None:
         """Update users resource quota usage."""
         try:
             if resource == ResourceType.disk:
-                update_workflows_disk_quota()
-                update_users_disk_quota()
+                update_workflows_disk_quota(override_policy_checks=True)
+                update_users_disk_quota(override_policy_checks=True)
                 click.secho(
                     "Disk quota usage updated successfully for all users and workflows.",
                     fg="green",
                 )
             elif resource == ResourceType.cpu:
-                update_workflows_cpu_quota()
-                update_users_cpu_quota()
+                update_workflows_cpu_quota(override_policy_checks=True)
+                update_users_cpu_quota(override_policy_checks=True)
                 click.secho(
                     "CPU quota usage updated successfully for all users and workflows.",
                     fg="green",
@@ -294,3 +300,44 @@ def resource_usage_update() -> None:
 
     _resource_usage_update(ResourceType.disk)
     _resource_usage_update(ResourceType.cpu)
+
+
+@quota_group.command("init-periodic-defaults")
+def init_periodic_defaults() -> None:
+    """Backfill deployment default periodic CPU quota policy for existing users."""
+    from reana_db.database import Session
+    from reana_db.models import UserResource
+
+    if not (
+        DEFAULT_QUOTA_CPU_PERIODIC_RESET_ENABLED
+        and DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS
+    ):
+        click.secho(
+            "Periodic CPU reset deployment defaults are not configured.",
+            fg="yellow",
+        )
+        return
+
+    cpu_resource = get_default_quota_resource(ResourceType.cpu.name)
+    user_resources = (
+        Session.query(UserResource)
+        .filter(UserResource.resource_id == cpu_resource.id_)
+        .filter(UserResource.quota_period_months.is_(None))
+        .all()
+    )
+
+    for user_resource in user_resources:
+        user_resource.quota_period_months = DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS
+        user_resource.quota_period_start_at = (
+            get_current_quota_period_start_at_from_anchor(
+                anchor_at=user_resource.user.created,
+                quota_period_months=DEFAULT_QUOTA_CPU_PERIODIC_RESET_MONTHS,
+            )
+        )
+    Session.commit()
+    updated_rows = len(user_resources)
+
+    click.secho(
+        f"Initialised periodic CPU reset policy for {updated_rows} existing users.",
+        fg="green",
+    )
