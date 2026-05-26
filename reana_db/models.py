@@ -608,6 +608,7 @@ class Workflow(Base, Timestamp, QuotaBase):
     job_progress = Column(JSONType, default=dict)
     workspace_path = Column(String)
     restart = Column(Boolean, default=False)
+    uses_kubernetes = Column(Boolean, default=True, nullable=False)
     # job_progress = {
     #  jobs_total = {total: job_number}
     #  jobs_running = {job_ids: [], total: c}
@@ -660,6 +661,7 @@ class Workflow(Base, Timestamp, QuotaBase):
         git_provider=None,
         workspace_path=None,
         restart=False,
+        uses_kubernetes=True,
         run_number=None,
         launcher_url=None,
     ):
@@ -678,6 +680,7 @@ class Workflow(Base, Timestamp, QuotaBase):
         self.git_repo = git_repo
         self.git_provider = git_provider
         self.restart = restart
+        self.uses_kubernetes = uses_kubernetes
         self.run_number_major, self.run_number_minor = self.get_new_run_number(
             run_number
         )
