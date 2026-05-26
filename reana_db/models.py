@@ -20,7 +20,7 @@ from typing import Dict, List, Tuple
 
 from reana_commons.config import (
     MQ_MAX_PRIORITY,
-    REANA_MAX_CONCURRENT_BATCH_WORKFLOWS,
+    get_concurrent_workflows_cap,
     REANA_RUNTIME_KUBERNETES_KEEP_ALIVE_JOBS_WITH_STATUSES,
     WORKFLOW_TIME_FORMAT,
 )
@@ -327,27 +327,40 @@ class User(Base, Timestamp, QuotaBase):
         )
 
     def get_workflow_overload_priority(self):
-        """Get priority factor based on the number of current workflows ``running``."""
-        from .database import Session
+        """Get priority factor based on the number of current workflows ``running``.
 
-        max_concurrent_workflows = REANA_MAX_CONCURRENT_BATCH_WORKFLOWS
-        running_count = (
-            Session.query(Workflow)
-            .filter(
-                Workflow.owner_id == self.id_,
-                or_(
-                    Workflow.status == RunStatus.pending,
-                    Workflow.status == RunStatus.running,
-                ),
-            )
-            .count()
+        The factor is computed against the same per-backend population the
+        scheduler uses to admit workflows (see
+        ``Workflow.count_active_per_backend`` and
+        ``check_concurrent_workflows_limit``): the user's utilisation is taken as
+        the worst per-resource ratio across all compute-backend caps and the Dask
+        cap, so a user saturating any single capped resource is deprioritised.
+        """
+        running_counts = Workflow.count_active_per_backend(owner_id=self.id_)
+
+        def ratio(resource, num_running):
+            cap = get_concurrent_workflows_cap(resource)
+            # A cap of zero means the resource is closed, so any workflow the
+            # user holds on it is already over the limit. Skipping zero caps
+            # here would instead leave such a user at full priority, which the
+            # scheduler would then immediately contradict.
+            if cap == 0:
+                return 1 if num_running else 0
+            return num_running / cap
+
+        max_ratio = max(
+            (
+                ratio(resource, num_running)
+                for resource, num_running in running_counts.items()
+            ),
+            default=0,
         )
-        if running_count >= max_concurrent_workflows:
+        if max_ratio >= 1:
             return 0.1
         # we reduce the 10% (* 0.9) to avoid getting a 0 multiplier factor when
-        # `running_count == `max_concurrent_workflows`, thus taking into
-        # account workflow complexity when workflows are requeued.
-        priority = round(1 - (running_count * 0.9) / max_concurrent_workflows, 2)
+        # the user is exactly at a cap, thus taking into account workflow
+        # complexity when workflows are requeued.
+        priority = round(1 - max_ratio * 0.9, 2)
         return priority
 
     def __repr__(self):
@@ -608,6 +621,19 @@ class Workflow(Base, Timestamp, QuotaBase):
     job_progress = Column(JSONType, default=dict)
     workspace_path = Column(String)
     restart = Column(Boolean, default=False)
+    # Set of execution backends the DAG uses, keyed by the backend
+    # identifier as written in a step's ``compute_backend`` field (e.g.
+    # ``["kubernetes"]`` or for a hybrid workflow:
+    # ``["kubernetes", "htcondorcern"]``).
+    # Supporting resources defined outside the DAG (like a Dask cluster)
+    # are recorded via the ``services`` relation, not here.
+    compute_backends = Column(
+        ARRAY(String),
+        nullable=False,
+        # Use a callable default so that manipulating the list in-place doesn't
+        # affect the shared default
+        default=lambda: ["kubernetes"],
+    )
     # job_progress = {
     #  jobs_total = {total: job_number}
     #  jobs_running = {job_ids: [], total: c}
@@ -660,6 +686,7 @@ class Workflow(Base, Timestamp, QuotaBase):
         git_provider=None,
         workspace_path=None,
         restart=False,
+        compute_backends=None,
         run_number=None,
         launcher_url=None,
     ):
@@ -678,6 +705,7 @@ class Workflow(Base, Timestamp, QuotaBase):
         self.git_repo = git_repo
         self.git_provider = git_provider
         self.restart = restart
+        self.compute_backends = compute_backends or ["kubernetes"]
         self.run_number_major, self.run_number_minor = self.get_new_run_number(
             run_number
         )
@@ -689,6 +717,51 @@ class Workflow(Base, Timestamp, QuotaBase):
     def __repr__(self):
         """Workflow string representation."""
         return "<Workflow %r>" % self.id_
+
+    @classmethod
+    def count_active_per_backend(cls, owner_id=None) -> Dict[str, int]:
+        """Count pending/running workflows per concurrency-capped resource.
+
+        Returns a mapping with one entry per compute backend that appears in any
+        active workflow, keyed by the backend identifier exactly as stored in
+        ``compute_backends`` (e.g. ``kubernetes``, ``htcondorcern``, ...),
+        plus a ``"dask"`` entry counting active workflows that request a Dask
+        cluster. Backends with no active workflows are absent from the result.
+        The counts are not mutually exclusive and don't necessarily sum to the
+        number of active workflows.
+
+        :param owner_id: if given, restrict the counts to this user's workflows.
+        """
+        from .database import Session
+
+        active = or_(
+            cls.status == RunStatus.pending,
+            cls.status == RunStatus.running,
+        )
+        filters = [active]
+        if owner_id is not None:
+            filters.append(cls.owner_id == owner_id)
+
+        # Expand each active workflow's ``compute_backends`` array into one row
+        # per backend, then count workflows per backend. As ``compute_backends``
+        # is a set, each workflow contributes at most one row per backend.
+        backend = func.unnest(cls.compute_backends).label("backend")
+        per_backend = (
+            Session.query(backend, func.count().label("n"))
+            .filter(*filters)
+            .group_by(backend)
+            .all()
+        )
+        counts = {row.backend: row.n for row in per_backend}
+
+        counts["dask"] = (
+            Session.query(cls)
+            .filter(*filters)
+            .join(cls.services)
+            .filter(Service.type_ == ServiceType.dask)
+            .count()
+        )
+        return counts
 
     @property
     def run_number(self) -> str:
