@@ -636,8 +636,6 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
         ResourceType,
         User,
         UserResource,
-        UserToken,
-        UserTokenStatus,
         Workflow,
         WorkflowResource,
     )
@@ -650,12 +648,9 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
     if user:
         users = [user]
     else:
-        users = (
-            Session.query(User)
-            .join(UserToken)
-            .filter_by(status=UserTokenStatus.active)  # skip users with no active token
-            .all()
-        )
+        # JWT-authenticated users do not have a legacy UserToken row. Quotas
+        # are account properties, so maintenance must include every user.
+        users = Session.query(User).all()
     timer_user = Timer("User CPU quota usage update", total=len(users))
     for user in users:
         user_resource_quota = (
@@ -862,24 +857,42 @@ def change_key_encrypted_columns(old_key):
     The old key is needed to decrypt the database and is passed as parameter.
     """
     from reana_db.database import Session
-    from reana_db.models import UserToken
+    from reana_db.models import InteractiveSession, User, UserToken
     from reana_db import config
 
     new_key = config.DB_SECRET_KEY
 
-    # set old key to be able to decrypt columns in database
-    config.DB_SECRET_KEY = old_key
-
-    # read the columns from the database
-    user_tokens = Session.query(UserToken.id_, UserToken.token).all()
-    Session.expunge_all()
-
-    # revert to new key
-    config.DB_SECRET_KEY = new_key
+    try:
+        # Set the old key while materialising every encrypted value. Keep only
+        # scalar identifiers and plaintext across the key switch so no ORM
+        # instance can lazily decrypt with the wrong key.
+        config.DB_SECRET_KEY = old_key
+        user_tokens = Session.query(UserToken.id_, UserToken.token).all()
+        webhook_secrets = (
+            Session.query(User.id_, User.gitlab_webhook_secret)
+            .filter(User.gitlab_webhook_secret.isnot(None))
+            .all()
+        )
+        interactive_session_secrets = (
+            Session.query(InteractiveSession.id_, InteractiveSession.session_secret)
+            .filter(InteractiveSession.session_secret.isnot(None))
+            .all()
+        )
+        Session.expunge_all()
+    finally:
+        config.DB_SECRET_KEY = new_key
 
     # write columns to the database to encrypt them with new key
     for user_token in user_tokens:
         Session.query(UserToken).filter_by(id_=user_token.id_).update(
             {"token": user_token.token}
+        )
+    for user in webhook_secrets:
+        Session.query(User).filter_by(id_=user.id_).update(
+            {"gitlab_webhook_secret": user.gitlab_webhook_secret}
+        )
+    for interactive_session in interactive_session_secrets:
+        Session.query(InteractiveSession).filter_by(id_=interactive_session.id_).update(
+            {"session_secret": interactive_session.session_secret}
         )
     Session.commit()

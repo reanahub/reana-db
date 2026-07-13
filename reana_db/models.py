@@ -70,6 +70,7 @@ from sqlalchemy_utils import EncryptedType, JSONType, UUIDType
 from sqlalchemy_utils.models import Timestamp
 from sqlalchemy_utils.types.encrypted.encrypted_type import AesEngine
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.exc import IntegrityError
 
 convention = {
     "ix": "ix_%(column_0_label)s",
@@ -163,12 +164,26 @@ class User(Base, Timestamp, QuotaBase):
     """User table."""
 
     __tablename__ = "user_"
-    __table_args__ = {"schema": "__reana"}
+    __table_args__ = (
+        CheckConstraint(
+            "(idp_issuer IS NULL) = (idp_subject IS NULL)",
+            name="idp_identity_complete",
+        ),
+        UniqueConstraint("idp_issuer", "idp_subject", name="uq_user__idp_identity"),
+        {"schema": "__reana"},
+    )
 
     id_ = Column(UUIDType, primary_key=True, unique=True, default=generate_uuid)
     email = Column(String(length=255), unique=True, primary_key=True)
     full_name = Column(String(length=255))
     username = Column(String(length=255))
+    idp_issuer = Column(String(length=255))
+    idp_subject = Column(String(length=255))
+    gitlab_webhook_secret = Column(
+        EncryptedType(String(length=255), _secret_key, AesEngine, "pkcs5"),
+        unique=True,
+    )
+    """Per-user secret used to authenticate incoming GitLab webhooks."""
     tokens = relationship("UserToken", backref="user_")
     workflows = relationship("Workflow", backref="owner")
     workflows_shared_with_me = relationship(
@@ -493,6 +508,10 @@ class InteractiveSession(Base, Timestamp, QuotaBase):
         nullable=False,
         default=InteractiveSessionType.jupyter,
     )
+    session_secret = Column(
+        EncryptedType(String(length=255), _secret_key, AesEngine, "pkcs5"),
+    )
+    """Random per-session secret used as the notebook access token."""
 
     __table_args__ = (
         UniqueConstraint("name", "path"),
@@ -1254,11 +1273,13 @@ class Resource(Base, Timestamp):
         return "<Resource {}>".format(self.id_)
 
     @staticmethod
-    def initialise_default_resources():
-        """Initialise default Resources."""
+    def initialise_default_resources(session=None):
+        """Initialise default resources using the provided database session."""
         from reana_db.database import Session
 
-        existing_resources = [r.name for r in Session.query(Resource).all()]
+        if session is None:
+            session = Session
+        existing_resources = [r.name for r in session.query(Resource).all()]
         default_resources = []
         resource_type_to_unit = {
             ResourceType.cpu: ResourceUnit.milliseconds,
@@ -1276,8 +1297,29 @@ class Resource(Base, Timestamp):
                 )
 
         if default_resources:
-            Session.add_all(default_resources)
-            Session.commit()
+            session.add_all(default_resources)
+            try:
+                session.commit()
+            except IntegrityError as error:
+                session.rollback()
+                constraint_name = getattr(
+                    getattr(getattr(error, "orig", None), "diag", None),
+                    "constraint_name",
+                    None,
+                )
+                if constraint_name != "uq_resource_name":
+                    raise
+
+                expected_resources = set(DEFAULT_QUOTA_RESOURCES.values())
+                persisted_resources = {
+                    resource.name
+                    for resource in session.query(Resource)
+                    .filter(Resource.name.in_(expected_resources))
+                    .all()
+                }
+                if persisted_resources != expected_resources:
+                    raise
+                return []
 
         return default_resources
 

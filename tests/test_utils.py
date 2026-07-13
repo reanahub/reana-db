@@ -20,7 +20,15 @@ from reana_commons.config import SHARED_VOLUME_PATH
 
 import reana_db.utils as utils
 from reana_db import database
-from reana_db.models import Workflow
+from reana_db import config as db_config
+from reana_db.models import (
+    InteractiveSession,
+    User,
+    UserToken,
+    UserTokenStatus,
+    UserTokenType,
+    Workflow,
+)
 from reana_db.utils import (
     _advance_user_cpu_quota_period_if_needed,
     _add_months,
@@ -33,6 +41,7 @@ from reana_db.utils import (
     update_workflow_cpu_quota,
     update_workflows_cpu_quota,
     update_workflows_disk_quota,
+    change_key_encrypted_columns,
 )
 
 
@@ -297,6 +306,91 @@ def test_update_users_cpu_quota_override_bypasses_policy_gate(monkeypatch):
         user_id="user-1", resource_id="cpu"
     )
     timer.count_event.assert_called_once()
+
+
+def test_update_users_cpu_quota_bulk_includes_users_without_tokens(monkeypatch):
+    """JWT-only accounts are included in bulk CPU quota maintenance."""
+    session = mock.MagicMock()
+    users = [SimpleNamespace(id_="jwt-user"), SimpleNamespace(id_="legacy-user")]
+    users_query = mock.MagicMock()
+    users_query.all.return_value = users
+    user_resource_query = mock.MagicMock()
+    user_resource_query.filter_by.return_value.first.return_value = None
+    session.query.side_effect = [users_query, user_resource_query, user_resource_query]
+
+    monkeypatch.setattr(database, "Session", session)
+    monkeypatch.setattr(
+        utils,
+        "get_default_quota_resource",
+        mock.Mock(return_value=SimpleNamespace(id_="cpu")),
+    )
+    monkeypatch.setattr(utils, "Timer", mock.Mock())
+
+    update_users_cpu_quota(override_policy_checks=True)
+
+    users_query.all.assert_called_once_with()
+    assert user_resource_query.filter_by.call_args_list == [
+        mock.call(user_id="jwt-user", resource_id="cpu"),
+        mock.call(user_id="legacy-user", resource_id="cpu"),
+    ]
+
+
+def test_change_key_rotates_every_encrypted_column(db, session):
+    """Key rotation covers legacy tokens and newer encrypted secrets."""
+    old_key = f"old-{uuid4()}"
+    new_key = db_config.DB_SECRET_KEY
+    token_value = f"token-{uuid4()}"
+    webhook_value = f"webhook-{uuid4()}"
+    session_value = f"session-{uuid4()}"
+
+    try:
+        # The package-scoped test database retains rows created by earlier
+        # tests. Key rotation assumes one current key across the database, so
+        # isolate the encrypted columns before creating old-key fixtures.
+        session.query(InteractiveSession).delete(synchronize_session=False)
+        session.query(UserToken).delete(synchronize_session=False)
+        session.query(User).update(
+            {"gitlab_webhook_secret": None}, synchronize_session=False
+        )
+        session.commit()
+        db_config.DB_SECRET_KEY = old_key
+        user = User(
+            email=f"{uuid4()}@reana.io",
+            gitlab_webhook_secret=webhook_value,
+        )
+        session.add(user)
+        session.flush()
+        user_token = UserToken(
+            token=token_value,
+            status=UserTokenStatus.active,
+            type_=UserTokenType.reana,
+            user_id=user.id_,
+        )
+        interactive_session = InteractiveSession(
+            name=f"session-{uuid4()}",
+            path=f"/sessions/{uuid4()}",
+            owner_id=user.id_,
+            session_secret=session_value,
+        )
+        session.add_all([user_token, interactive_session])
+        session.commit()
+        ids = (user.id_, user_token.id_, interactive_session.id_)
+        session.expunge_all()
+
+        db_config.DB_SECRET_KEY = new_key
+        change_key_encrypted_columns(old_key)
+        session.expunge_all()
+
+        assert session.query(User).filter_by(
+            id_=ids[0]
+        ).one().gitlab_webhook_secret == (webhook_value)
+        assert session.query(UserToken).filter_by(id_=ids[1]).one().token == token_value
+        assert (
+            session.query(InteractiveSession).filter_by(id_=ids[2]).one().session_secret
+            == session_value
+        )
+    finally:
+        db_config.DB_SECRET_KEY = new_key
 
 
 def test_update_users_cpu_quota_periodic_path_loads_only_needed_fields(monkeypatch):
