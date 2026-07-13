@@ -18,6 +18,18 @@ import reana_db.cli as cli_module
 from reana_db import database
 
 
+def test_create_default_resources_succeeds_when_resources_exist(monkeypatch):
+    """Test repeated default resource initialisation is a successful no-op."""
+    monkeypatch.setattr(
+        cli_module.Resource, "initialise_default_resources", mock.Mock(return_value=[])
+    )
+
+    result = CliRunner().invoke(cli_module.cli, ["quota", "create-default-resources"])
+
+    assert result.exit_code == 0
+    assert "default resources already exist" in result.output
+
+
 def test_resource_usage_update_passes_override_policy_checks(monkeypatch):
     """Test the manual quota refresh command overrides policy gates."""
     update_workflows_disk_quota = mock.Mock()
