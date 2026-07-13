@@ -1315,3 +1315,82 @@ class UserWorkflow(Base):
     def __repr__(self):
         """User Workflow string representation."""
         return "<UserWorkflow {} {}>".format(self.workflow_id, self.user_id)
+
+
+class ExternalGroup(Base, Timestamp):
+    """External group table.
+
+    Provider-neutral representation of a group coming from a group backend
+    (e.g. local Keycloak groups, later CERN/IAM groups). ``external_id`` is
+    the immutable identifier within the provider's namespace.
+    """
+
+    __tablename__ = "external_group"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider", "external_id", name="uq_external_group_provider_external_id"
+        ),
+        {"schema": "__reana"},
+    )
+
+    id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
+    provider = Column(String(length=255), nullable=False)
+    external_id = Column(String(length=255), nullable=False)
+    display_name = Column(String(length=255))
+    last_seen_at = Column(DateTime)
+
+    def __repr__(self):
+        """External group string representation."""
+        return "<ExternalGroup {}:{}>".format(self.provider, self.external_id)
+
+
+class UserGroupMembership(Base):
+    """User group membership table.
+
+    Snapshot of a user's membership in an external group, synchronized at
+    login/JIT provisioning and by the periodic refresh job. ``synced_at``
+    drives the fail-closed freshness check
+    (``REANA_GROUP_MEMBERSHIP_MAX_AGE``).
+    """
+
+    __tablename__ = "user_group_membership"
+    __table_args__ = (
+        Index("ix_user_group_membership_group_id", "group_id"),
+        {"schema": "__reana"},
+    )
+
+    user_id = Column(UUIDType, ForeignKey("__reana.user_.id_"), primary_key=True)
+    group_id = Column(
+        UUIDType, ForeignKey("__reana.external_group.id_"), primary_key=True
+    )
+    synced_at = Column(DateTime, nullable=False)
+
+    def __repr__(self):
+        """User group membership string representation."""
+        return "<UserGroupMembership {} {}>".format(self.user_id, self.group_id)
+
+
+class GroupWorkflow(Base, Timestamp):
+    """GroupWorkflow table.
+
+    Read-only workflow share targeting an external group; mirrors
+    ``UserWorkflow`` for group grants.
+    """
+
+    __tablename__ = "group_workflow"
+    __table_args__ = (
+        Index("ix_group_workflow_group_id", "group_id"),
+        {"schema": "__reana"},
+    )
+
+    workflow_id = Column(UUIDType, ForeignKey("__reana.workflow.id_"), primary_key=True)
+    group_id = Column(
+        UUIDType, ForeignKey("__reana.external_group.id_"), primary_key=True
+    )
+    access_type = Column(Enum(AccessType), default=AccessType.read, nullable=False)
+    message = Column(String(5000))
+    valid_until = Column(DateTime)
+
+    def __repr__(self):
+        """Group workflow string representation."""
+        return "<GroupWorkflow {} {}>".format(self.workflow_id, self.group_id)

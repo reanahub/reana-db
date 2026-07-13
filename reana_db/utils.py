@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2026 CERN.
+# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -20,7 +20,7 @@ from reana_db.config import (
     PERIODIC_RESOURCE_QUOTA_UPDATE_POLICY,
     WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY,
 )
-from sqlalchemy import func, inspect
+from sqlalchemy import and_, exists, func, inspect, or_
 from sqlalchemy.orm import defer, load_only
 
 
@@ -60,6 +60,92 @@ def split_run_number(run_number):
     return int(run_number), 0
 
 
+def active_workflow_share_criterion(user_uuid):
+    """Build a SQLAlchemy criterion selecting workflows actively shared with a user.
+
+    The criterion is correlated against ``Workflow`` and must be used inside
+    a query on ``Workflow``. It covers:
+
+    - direct user shares (``user_workflow``) whose ``valid_until`` has not
+      passed (a ``valid_until`` date remains active through that UTC date);
+    - group shares (``group_workflow``) with the same expiration semantics,
+      where the user additionally has a fresh membership snapshot
+      (``synced_at`` within ``REANA_GROUP_MEMBERSHIP_MAX_AGE``, fail-closed).
+
+    Implemented with ``EXISTS`` subqueries instead of joins so that paginated
+    workflow listings never produce duplicate rows.
+
+    :param user_uuid: UUID of the user whose access is being checked.
+    :return: SQLAlchemy boolean criterion.
+    """
+    from reana_db.config import REANA_GROUP_MEMBERSHIP_MAX_AGE
+    from reana_db.models import (
+        GroupWorkflow,
+        UserGroupMembership,
+        UserWorkflow,
+        Workflow,
+    )
+
+    now = datetime.utcnow()
+    # A `valid_until` date remains active through that UTC date.
+    today_start = datetime.combine(now.date(), datetime.min.time())
+    membership_freshness_threshold = now - timedelta(
+        seconds=REANA_GROUP_MEMBERSHIP_MAX_AGE
+    )
+
+    user_share = exists().where(
+        and_(
+            UserWorkflow.workflow_id == Workflow.id_,
+            UserWorkflow.user_id == user_uuid,
+            or_(
+                UserWorkflow.valid_until.is_(None),
+                UserWorkflow.valid_until >= today_start,
+            ),
+        )
+    )
+    group_share = exists().where(
+        and_(
+            GroupWorkflow.workflow_id == Workflow.id_,
+            or_(
+                GroupWorkflow.valid_until.is_(None),
+                GroupWorkflow.valid_until >= today_start,
+            ),
+            UserGroupMembership.group_id == GroupWorkflow.group_id,
+            UserGroupMembership.user_id == user_uuid,
+            UserGroupMembership.synced_at >= membership_freshness_threshold,
+        )
+    )
+    return or_(user_share, group_share)
+
+
+def user_can_read_workflow(user_uuid, workflow_id):
+    """Check whether a user may read a workflow.
+
+    A workflow is readable by its owner, by users it is actively shared
+    with, and by members of groups it is actively shared with (see
+    :func:`active_workflow_share_criterion` for expiration and freshness
+    semantics).
+
+    :param user_uuid: UUID of the user.
+    :param workflow_id: UUID of the workflow.
+    :rtype: bool
+    """
+    from reana_db.database import Session
+    from reana_db.models import Workflow
+
+    return Session.query(
+        Session.query(Workflow)
+        .filter(
+            Workflow.id_ == workflow_id,
+            or_(
+                Workflow.owner_id == user_uuid,
+                active_workflow_share_criterion(user_uuid),
+            ),
+        )
+        .exists()
+    ).scalar()
+
+
 def _get_workflow_with_uuid_or_name(
     uuid_or_name, user_uuid, include_shared_workflows=False
 ):
@@ -81,7 +167,7 @@ def _get_workflow_with_uuid_or_name(
     :rtype: reana-db.models.Workflow
     """
     from reana_db.database import Session
-    from reana_db.models import UserWorkflow, Workflow
+    from reana_db.models import Workflow
 
     # Check existence
     if not uuid_or_name:
@@ -159,14 +245,13 @@ def _get_workflow_with_uuid_or_name(
         if include_shared_workflows:
             workflow = (
                 Session.query(Workflow)
-                .outerjoin(UserWorkflow, UserWorkflow.workflow_id == Workflow.id_)
                 .filter(
                     (Workflow.name == workflow_name)
                     & (Workflow.run_number_major == run_number_major)
                     & (Workflow.run_number_minor == run_number_minor)
                     & (
                         (Workflow.owner_id == user_uuid)
-                        | (UserWorkflow.user_id == user_uuid)
+                        | active_workflow_share_criterion(user_uuid)
                     )
                 )
                 .one_or_none()
@@ -202,17 +287,16 @@ def _get_workflow_by_name(workflow_name, user_uuid, include_shared_workflows=Fal
     :rtype: reana-db.models.Workflow
     """
     from reana_db.database import Session
-    from reana_db.models import UserWorkflow, Workflow
+    from reana_db.models import Workflow
 
     if include_shared_workflows:
         workflow = (
             Session.query(Workflow)
-            .outerjoin(UserWorkflow, Workflow.id_ == UserWorkflow.workflow_id)
             .filter(
                 (Workflow.name == workflow_name)
                 & (
                     (Workflow.owner_id == user_uuid)
-                    | (UserWorkflow.user_id == user_uuid)
+                    | active_workflow_share_criterion(user_uuid)
                 )
             )
             .order_by(
@@ -250,17 +334,16 @@ def _get_workflow_by_uuid(workflow_uuid, user_uuid, include_shared_workflows=Fal
     :rtype: reana-db.models.Workflow
     """
     from reana_db.database import Session
-    from reana_db.models import UserWorkflow, Workflow
+    from reana_db.models import Workflow
 
     if include_shared_workflows:
         workflow = (
             Session.query(Workflow)
-            .outerjoin(UserWorkflow, Workflow.id_ == UserWorkflow.workflow_id)
             .filter(
                 (Workflow.id_ == workflow_uuid)
                 & (
                     (Workflow.owner_id == user_uuid)
-                    | (UserWorkflow.user_id == user_uuid)
+                    | active_workflow_share_criterion(user_uuid)
                 )
             )
             .first()

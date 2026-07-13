@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023, 2026 CERN.
+# Copyright (C) 2018, 2019, 2020, 2021, 2022 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -118,3 +118,13 @@ PERIODIC_RESOURCE_QUOTA_UPDATE_POLICY = strtobool(
     os.getenv("REANA_PERIODIC_RESOURCE_QUOTA_UPDATE_POLICY", "false")
 )
 """Whether to run the periodic (cronjob) resource quota updater."""
+
+REANA_GROUP_MEMBERSHIP_MAX_AGE = int(
+    os.getenv("REANA_GROUP_MEMBERSHIP_MAX_AGE", "86400")
+)
+"""Maximum age in seconds of a user's group membership snapshot.
+
+Group-derived workflow access is denied when the user's membership snapshot
+is older than this value (fail-closed). The snapshot is refreshed on every
+login/JIT provisioning and by the periodic group-membership refresh job.
+"""
