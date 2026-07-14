@@ -184,6 +184,8 @@ class User(Base, Timestamp, QuotaBase):
         unique=True,
     )
     """Per-user secret used to authenticate incoming GitLab webhooks."""
+    gitlab_webhook_secret_expires_at = Column(DateTime)
+    """Time after which the delegated GitLab webhook secret is rejected."""
     tokens = relationship("UserToken", backref="user_")
     workflows = relationship("Workflow", backref="owner")
     workflows_shared_with_me = relationship(

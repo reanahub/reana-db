@@ -24,6 +24,7 @@ from reana_db import config as db_config
 from reana_db.models import (
     InteractiveSession,
     User,
+    UserResource,
     UserToken,
     UserTokenStatus,
     UserTokenType,
@@ -284,10 +285,9 @@ def test_update_workflows_cpu_quota_passes_override_policy_checks(monkeypatch):
 def test_update_users_cpu_quota_override_bypasses_policy_gate(monkeypatch):
     """Test manual user CPU quota refresh bypasses the policy gate."""
     session = mock.MagicMock()
-    user_resource_query = mock.MagicMock()
-    user_resource_query.filter_by.return_value.first.return_value = None
-    session.query.return_value = user_resource_query
-    timer = mock.MagicMock()
+    ur_query = mock.MagicMock()
+    ur_query.filter_by.return_value.filter_by.return_value.all.return_value = []
+    session.query.return_value = ur_query
     user = SimpleNamespace(id_="user-1")
 
     monkeypatch.setattr(database, "Session", session)
@@ -297,26 +297,42 @@ def test_update_users_cpu_quota_override_bypasses_policy_gate(monkeypatch):
         "get_default_quota_resource",
         mock.Mock(return_value=SimpleNamespace(id_="cpu")),
     )
-    monkeypatch.setattr(utils, "Timer", mock.Mock(return_value=timer))
+    monkeypatch.setattr(utils, "Timer", mock.Mock())
 
+    # Policy gate active: without the override the refresh is skipped entirely,
+    # before any database query is issued.
     assert update_users_cpu_quota(user=user) is None
+    session.query.assert_not_called()
+
+    # The override bypasses the gate and refreshes from the CPU quota rows.
     update_users_cpu_quota(user=user, override_policy_checks=True)
 
-    user_resource_query.filter_by.assert_called_once_with(
-        user_id="user-1", resource_id="cpu"
-    )
-    timer.count_event.assert_called_once()
+    session.query.assert_called_once_with(UserResource)
+    ur_query.filter_by.assert_called_once_with(resource_id="cpu")
+    ur_query.filter_by.return_value.filter_by.assert_called_once_with(user_id="user-1")
 
 
-def test_update_users_cpu_quota_bulk_includes_users_without_tokens(monkeypatch):
-    """JWT-only accounts are included in bulk CPU quota maintenance."""
+def test_update_users_cpu_quota_bulk_drives_from_quota_rows(monkeypatch):
+    """Bulk CPU quota maintenance scans CPU quota rows, not the whole user table.
+
+    Driving from ``UserResource`` still includes JWT-only and legacy accounts
+    (they hold a quota row but no ``UserToken``) while avoiding a full ``user_``
+    table scan and a per-account quota lookup.
+    """
     session = mock.MagicMock()
-    users = [SimpleNamespace(id_="jwt-user"), SimpleNamespace(id_="legacy-user")]
-    users_query = mock.MagicMock()
-    users_query.all.return_value = users
-    user_resource_query = mock.MagicMock()
-    user_resource_query.filter_by.return_value.first.return_value = None
-    session.query.side_effect = [users_query, user_resource_query, user_resource_query]
+    quota_rows = [
+        SimpleNamespace(user_id="jwt-user", quota_used=None),
+        SimpleNamespace(user_id="legacy-user", quota_used=None),
+    ]
+    ur_query = mock.MagicMock()
+    ur_query.filter_by.return_value.all.return_value = quota_rows
+    # Each row falls into the no-active-window branch, which sums workflow CPU.
+    sum_query = mock.MagicMock()
+    sum_query.filter.return_value.join.return_value.filter.return_value.scalar.return_value = (
+        42
+    )
+    session.query.side_effect = [ur_query, sum_query, sum_query]
+    timer = mock.MagicMock()
 
     monkeypatch.setattr(database, "Session", session)
     monkeypatch.setattr(
@@ -324,15 +340,26 @@ def test_update_users_cpu_quota_bulk_includes_users_without_tokens(monkeypatch):
         "get_default_quota_resource",
         mock.Mock(return_value=SimpleNamespace(id_="cpu")),
     )
-    monkeypatch.setattr(utils, "Timer", mock.Mock())
+    monkeypatch.setattr(utils, "Timer", mock.Mock(return_value=timer))
+    monkeypatch.setattr(utils, "_advance_user_cpu_quota_period_if_needed", mock.Mock())
+    monkeypatch.setattr(
+        utils,
+        "_get_current_user_cpu_quota_period_start_at",
+        mock.Mock(return_value=None),
+    )
 
     update_users_cpu_quota(override_policy_checks=True)
 
-    users_query.all.assert_called_once_with()
-    assert user_resource_query.filter_by.call_args_list == [
-        mock.call(user_id="jwt-user", resource_id="cpu"),
-        mock.call(user_id="legacy-user", resource_id="cpu"),
-    ]
+    # Driven from the CPU ``UserResource`` rows...
+    assert session.query.call_args_list[0] == mock.call(UserResource)
+    ur_query.filter_by.assert_called_once_with(resource_id="cpu")
+    # ...and never from a full ``user_`` table scan (identity check avoids
+    # evaluating SQLAlchemy expression equality).
+    queried_models = [call.args[0] for call in session.query.call_args_list]
+    assert not any(model is User for model in queried_models)
+    # Both quota rows were updated and the timer advanced once each.
+    assert [row.quota_used for row in quota_rows] == [42, 42]
+    assert timer.count_event.call_count == 2
 
 
 def test_change_key_rotates_every_encrypted_column(db, session):
@@ -402,13 +429,16 @@ def test_update_users_cpu_quota_periodic_path_loads_only_needed_fields(monkeypat
     timer = mock.MagicMock()
     user = SimpleNamespace(id_="user-1")
     user_resource_quota = SimpleNamespace(
+        user_id="user-1",
         quota_period_months=3,
         quota_period_start_at=datetime(2026, 4, 1, 0, 0, 0),
         quota_used=0,
     )
     workflows = [SimpleNamespace(id_="wf-1"), SimpleNamespace(id_="wf-2")]
 
-    user_resource_query.filter_by.return_value.first.return_value = user_resource_quota
+    user_resource_query.filter_by.return_value.filter_by.return_value.all.return_value = [
+        user_resource_quota
+    ]
     workflow_query.options.return_value = workflow_options_query
     workflow_options_query.filter_by.return_value.all.return_value = workflows
     session.query.side_effect = [user_resource_query, workflow_query]

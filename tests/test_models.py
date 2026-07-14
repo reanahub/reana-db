@@ -9,7 +9,7 @@
 """REANA-DB models tests."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
@@ -102,6 +102,7 @@ def test_encrypted_secrets_round_trip_after_reload(db, session):
     user = User(
         email=f"{uuid4()}@reana.io",
         gitlab_webhook_secret=webhook_secret,
+        gitlab_webhook_secret_expires_at=datetime.utcnow() + timedelta(days=1),
     )
     session.add(user)
     session.commit()
@@ -110,6 +111,7 @@ def test_encrypted_secrets_round_trip_after_reload(db, session):
     session.expunge(user)
     reloaded_user = session.query(User).filter_by(id_=user_id).one()
     assert reloaded_user.gitlab_webhook_secret == webhook_secret
+    assert reloaded_user.gitlab_webhook_secret_expires_at > datetime.utcnow()
 
     interactive_session = InteractiveSession(
         name=f"session-{uuid4()}",

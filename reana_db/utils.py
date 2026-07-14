@@ -634,7 +634,6 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
     from reana_db.database import Session
     from reana_db.models import (
         ResourceType,
-        User,
         UserResource,
         Workflow,
         WorkflowResource,
@@ -645,23 +644,20 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
 
     cpu_resource = get_default_quota_resource(ResourceType.cpu.name)
 
+    # Drive maintenance from the CPU quota rows themselves. Only accounts that
+    # actually hold a CPU quota need updating -- including legacy/unlinked and
+    # JWT-only users, who have a ``UserResource`` row but no legacy ``UserToken``
+    # -- so this avoids a full ``user_`` table scan and one quota lookup per
+    # account. ``UserResource.user_id`` is all the per-user identity the loop
+    # needs, so no ``User`` row is materialised.
+    quota_query = Session.query(UserResource).filter_by(resource_id=cpu_resource.id_)
     if user:
-        users = [user]
-    else:
-        # JWT-authenticated users do not have a legacy UserToken row. Quotas
-        # are account properties, so maintenance must include every user.
-        users = Session.query(User).all()
-    timer_user = Timer("User CPU quota usage update", total=len(users))
-    for user in users:
-        user_resource_quota = (
-            Session.query(UserResource)
-            .filter_by(user_id=user.id_, resource_id=cpu_resource.id_)
-            .first()
-        )
+        quota_query = quota_query.filter_by(user_id=user.id_)
+    user_resource_quotas = quota_query.all()
 
-        if not user_resource_quota:
-            timer_user.count_event()
-            continue
+    timer_user = Timer("User CPU quota usage update", total=len(user_resource_quotas))
+    for user_resource_quota in user_resource_quotas:
+        owner_id = user_resource_quota.user_id
 
         _advance_user_cpu_quota_period_if_needed(user_resource_quota)
 
@@ -681,7 +677,7 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
                     defer(Workflow.logs),
                     defer(Workflow.reana_specification),
                 )
-                .filter_by(owner_id=user.id_)
+                .filter_by(owner_id=owner_id)
                 .all()
             )
             cpu_milliseconds = sum(
@@ -696,7 +692,7 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
                 Session.query(func.sum(WorkflowResource.quota_used))
                 .filter(WorkflowResource.resource_id == cpu_resource.id_)
                 .join(Workflow, WorkflowResource.workflow_id == Workflow.id_)
-                .filter(Workflow.owner_id == user.id_)
+                .filter(Workflow.owner_id == owner_id)
                 .scalar()
             )
 

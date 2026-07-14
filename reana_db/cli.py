@@ -266,7 +266,6 @@ def create_default_resources():
         click.secho(
             "No action to be taken: default resources already exist.", fg="yellow"
         )
-        sys.exit(1)
 
 
 @quota_group.command()
