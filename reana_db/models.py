@@ -27,7 +27,7 @@ from reana_commons.config import (
 from reana_commons.errors import REANAValidationError
 from reana_commons.utils import get_disk_usage
 
-import reana_db.config
+from reana_db import secrets
 from reana_db.config import (
     DEFAULT_QUOTA_LIMITS,
     DEFAULT_QUOTA_CPU_PERIOD_RESET_MONTHS,
@@ -66,9 +66,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship, backref
-from sqlalchemy_utils import EncryptedType, JSONType, UUIDType
+from sqlalchemy_utils import JSONType, UUIDType
 from sqlalchemy_utils.models import Timestamp
-from sqlalchemy_utils.types.encrypted.encrypted_type import AesEngine
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.exc import IntegrityError
 
@@ -89,15 +88,6 @@ Base = declarative_base(metadata=metadata_obj)
 def generate_uuid():
     """Generate new uuid."""
     return str(uuid.uuid4())
-
-
-def _secret_key():
-    """Secret key used to encrypt databse columns.
-
-    Do not use `DB_SECRET_KEY` directly, as that does not let us change the key
-    at runtime, which is needed when migrating between different keys.
-    """
-    return reana_db.config.DB_SECRET_KEY
 
 
 class QuotaBase:
@@ -170,6 +160,15 @@ class User(Base, Timestamp, QuotaBase):
             name="idp_identity_complete",
         ),
         UniqueConstraint("idp_issuer", "idp_subject", name="uq_user__idp_identity"),
+        CheckConstraint(
+            "(gitlab_webhook_secret IS NULL) = "
+            "(gitlab_webhook_secret_digest IS NULL)",
+            name="gitlab_webhook_secret_complete",
+        ),
+        UniqueConstraint(
+            "gitlab_webhook_secret_digest",
+            name="uq_user__gitlab_webhook_secret_digest",
+        ),
         {"schema": "__reana"},
     )
 
@@ -179,14 +178,11 @@ class User(Base, Timestamp, QuotaBase):
     username = Column(String(length=255))
     idp_issuer = Column(String(length=255))
     idp_subject = Column(String(length=255))
-    gitlab_webhook_secret = Column(
-        EncryptedType(String(length=255), _secret_key, AesEngine, "pkcs5"),
-        unique=True,
-    )
+    _gitlab_webhook_secret = secrets.bearer_secret_column(name="gitlab_webhook_secret")
+    gitlab_webhook_secret_digest = secrets.lookup_digest_column()
     """Per-user secret used to authenticate incoming GitLab webhooks."""
     gitlab_webhook_secret_expires_at = Column(DateTime)
     """Time after which the delegated GitLab webhook secret is rejected."""
-    tokens = relationship("UserToken", backref="user_")
     workflows = relationship("Workflow", backref="owner")
     workflows_shared_with_me = relationship(
         "Workflow",
@@ -197,73 +193,27 @@ class User(Base, Timestamp, QuotaBase):
     )
     audit_logs = relationship("AuditLog", backref="user_")
 
-    def __init__(self, access_token=None, **kwargs):
+    @hybrid_property
+    def gitlab_webhook_secret(self):
+        """Return the decrypted GitLab webhook secret."""
+        return self._gitlab_webhook_secret
+
+    @gitlab_webhook_secret.setter
+    def gitlab_webhook_secret(self, value):
+        """Store a webhook secret and maintain its independent lookup digest."""
+        self._gitlab_webhook_secret = value
+        self.gitlab_webhook_secret_digest = secrets.compute_lookup_digest(value)
+
+    @gitlab_webhook_secret.expression
+    def gitlab_webhook_secret(cls):
+        """Expose the encrypted column for null checks and key rotation only."""
+        return cls._gitlab_webhook_secret
+
+    def __init__(self, **kwargs):
         """Initialize user model."""
         for k, v in kwargs.items():
             setattr(self, k, v)
-        if access_token:
-            self.access_token = access_token
         self.initialize_user_quota_limits()
-
-    @hybrid_property
-    def active_token(self):
-        """REANA active access token object."""
-        from .database import Session
-
-        return (
-            Session.query(UserToken)
-            .filter_by(
-                user_id=self.id_,
-                status=UserTokenStatus.active,
-                type_=UserTokenType.reana,
-            )
-            .one_or_none()
-        )
-
-    @hybrid_property
-    def access_token(self):
-        """REANA active access token value."""
-        return self.active_token.token if self.active_token else None
-
-    @access_token.setter
-    def access_token(self, value):
-        """REANA access token setter."""
-        from .database import Session
-
-        token_count = Session.query(UserToken).filter_by(user_id=self.id_).count()
-        if token_count and self.active_token:
-            raise Exception("User {} has already an active access token.".format(self))
-        if token_count and self.access_token_status == UserTokenStatus.requested.name:
-            self.latest_access_token.status = UserTokenStatus.active
-            self.latest_access_token.token = value
-        else:
-            user_token = UserToken(
-                user_=self,
-                token=value,
-                status=UserTokenStatus.active,
-                type_=UserTokenType.reana,
-            )
-            Session.add(user_token)
-
-    @hybrid_property
-    def latest_access_token(self):
-        """REANA most recent access token."""
-        from .database import Session
-
-        latest_reana_token = (
-            Session.query(UserToken)
-            .filter_by(user_id=self.id_, type_=UserTokenType.reana)
-            .order_by(UserToken.created.desc())
-            .first()
-        )
-        return latest_reana_token or None
-
-    @hybrid_property
-    def access_token_status(self):
-        """REANA most recent access token status."""
-        return (
-            self.latest_access_token.status.name if self.latest_access_token else None
-        )
 
     def get_user_workspace(self):
         """Build user's workspace directory path.
@@ -271,26 +221,6 @@ class User(Base, Timestamp, QuotaBase):
         :return: Path to the user's workspace directory.
         """
         return build_workspace_path(self.id_)
-
-    def request_access_token(self):
-        """Create user token and mark it as requested."""
-        from .database import Session
-
-        token_count = Session.query(UserToken).filter_by(user_id=self.id_).count()
-        if token_count and self.active_token:
-            raise Exception("User {} has already an active access token.".format(self))
-        if token_count and self.access_token_status == UserTokenStatus.requested.name:
-            raise Exception(
-                "User {} has already requested an access" " token.".format(self)
-            )
-        user_token = UserToken(
-            user_=self,
-            token=None,
-            status=UserTokenStatus.requested,
-            type_=UserTokenType.reana,
-        )
-        Session.add(user_token)
-        Session.commit()
 
     def log_action(self, action, details=None):
         """Create audit log entry for the user.
@@ -370,36 +300,6 @@ class User(Base, Timestamp, QuotaBase):
     def __repr__(self):
         """User string representation."""
         return "<User %r>" % self.id_
-
-
-class UserTokenStatus(enum.Enum):
-    """Enumeration of possible user token statuses."""
-
-    requested = 0
-    active = 1
-    revoked = 2
-
-
-class UserTokenType(enum.Enum):
-    """Enumeration of possible user token types."""
-
-    reana = 0
-
-
-class UserToken(Base, Timestamp):
-    """User tokens table."""
-
-    __tablename__ = "user_token"
-    __table_args__ = {"schema": "__reana"}
-
-    id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
-    token = Column(
-        EncryptedType(String(length=255), _secret_key, AesEngine, "pkcs5"),
-        unique=True,
-    )
-    status = Column(Enum(UserTokenStatus))
-    user_id = Column(UUIDType, ForeignKey("__reana.user_.id_"), nullable=False)
-    type_ = Column(Enum(UserTokenType), nullable=False)
 
 
 class CleanUpDependingOnStatusMixin:
@@ -510,9 +410,7 @@ class InteractiveSession(Base, Timestamp, QuotaBase):
         nullable=False,
         default=InteractiveSessionType.jupyter,
     )
-    session_secret = Column(
-        EncryptedType(String(length=255), _secret_key, AesEngine, "pkcs5"),
-    )
+    session_secret = secrets.bearer_secret_column()
     """Random per-session secret used as the notebook access token."""
 
     __table_args__ = (
@@ -779,14 +677,6 @@ class Workflow(Base, Timestamp, QuotaBase):
     def get_specification(self):
         """Return workflow specification."""
         return self.reana_specification["workflow"].get("specification", {})
-
-    def get_owner_access_token(self):
-        """Return workflow owner access token."""
-        from .database import Session
-
-        db_session = Session.object_session(self)
-        owner = db_session.query(User).filter_by(id_=self.owner_id).first()
-        return owner.access_token
 
     def get_full_workflow_name(self):
         """Return full workflow name including run number."""
@@ -1335,6 +1225,11 @@ class UserResource(Base, Timestamp):
             "quota_period_months IS NULL OR quota_period_months > 0",
             name="quota_period_months_positive",
         ),
+        # The primary key (user_id, resource_id) cannot be seeked on
+        # resource_id alone; periodic quota maintenance filters by
+        # resource_id (optionally also user_id), so without this index it
+        # is a full table scan.
+        Index(None, "resource_id", "user_id"),
         {"schema": "__reana"},
     )
 

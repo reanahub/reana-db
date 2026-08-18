@@ -4,6 +4,13 @@ Revision ID: 25a9293c27cc
 Revises: 06dbbeef6d9b
 Create Date: 2026-06-11 10:10:00.000000
 
+Maintenance-window note: ``create_unique_constraint`` builds its backing
+index while holding an ``ACCESS EXCLUSIVE`` lock on ``user_`` for the build's
+duration, blocking every read/write on that table -- including JIT
+provisioning and token validation lookups on every authenticated request.
+Existing rows are unaffected (both new columns are nullable and Postgres
+unique constraints permit multiple NULLs), but on an installation with a
+large ``user_`` table, run this during a maintenance window.
 """
 
 import sqlalchemy as sa

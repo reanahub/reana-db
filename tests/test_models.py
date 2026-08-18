@@ -10,13 +10,14 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+import hashlib
 from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
 
 import mock
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
@@ -30,8 +31,6 @@ from reana_db.models import (
     ResourceUnit,
     ResourceType,
     JobStatus,
-    UserTokenStatus,
-    UserTokenType,
     User,
     Workflow,
     WorkflowResource,
@@ -111,6 +110,10 @@ def test_encrypted_secrets_round_trip_after_reload(db, session):
     session.expunge(user)
     reloaded_user = session.query(User).filter_by(id_=user_id).one()
     assert reloaded_user.gitlab_webhook_secret == webhook_secret
+    assert (
+        reloaded_user.gitlab_webhook_secret_digest
+        == hashlib.sha256(webhook_secret.encode("utf-8")).hexdigest()
+    )
     assert reloaded_user.gitlab_webhook_secret_expires_at > datetime.utcnow()
 
     interactive_session = InteractiveSession(
@@ -128,6 +131,69 @@ def test_encrypted_secrets_round_trip_after_reload(db, session):
         session.query(InteractiveSession).filter_by(id_=interactive_session_id).one()
     )
     assert reloaded_session.session_secret == session_secret
+
+
+def test_webhook_secret_reencryption_is_randomized(db, session):
+    """AES-GCM uses a fresh nonce even when storing the same plaintext again."""
+    secret = f"webhook-{uuid4()}"
+    user = User(email=f"{uuid4()}@reana.io", gitlab_webhook_secret=secret)
+    session.add(user)
+    session.commit()
+    first_ciphertext = session.execute(
+        text("SELECT gitlab_webhook_secret FROM __reana.user_ WHERE id_ = :user_id"),
+        {"user_id": user.id_},
+    ).scalar_one()
+
+    # Force two writes of the original value; assigning the identical Python
+    # value twice without an intermediate change is intentionally elided by
+    # SQLAlchemy's dirty tracking before the type's encryption hook runs.
+    user.gitlab_webhook_secret = f"{secret}-temporary"
+    session.commit()
+    user.gitlab_webhook_secret = secret
+    session.commit()
+    second_ciphertext = session.execute(
+        text("SELECT gitlab_webhook_secret FROM __reana.user_ WHERE id_ = :user_id"),
+        {"user_id": user.id_},
+    ).scalar_one()
+
+    assert bytes(first_ciphertext) != bytes(second_ciphertext)
+    assert (
+        user.gitlab_webhook_secret_digest
+        == hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    )
+
+
+def test_webhook_secret_and_digest_must_be_set_together(db, session):
+    """The database rejects drift between recoverable and lookup values."""
+    user = User(
+        email=f"{uuid4()}@reana.io",
+        gitlab_webhook_secret=f"webhook-{uuid4()}",
+    )
+    session.add(user)
+    session.commit()
+
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "UPDATE __reana.user_ SET gitlab_webhook_secret_digest = NULL "
+                "WHERE id_ = :user_id"
+            ),
+            {"user_id": user.id_},
+        )
+        session.commit()
+    session.rollback()
+
+
+def test_webhook_secret_digest_is_unique(db, session):
+    """Two users cannot be assigned the same webhook bearer secret."""
+    secret = f"webhook-{uuid4()}"
+    session.add(User(email=f"{uuid4()}@reana.io", gitlab_webhook_secret=secret))
+    session.commit()
+
+    session.add(User(email=f"{uuid4()}@reana.io", gitlab_webhook_secret=secret))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
 
 
 def test_initialise_default_resources_converges_across_sessions(
@@ -593,45 +659,6 @@ def test_audit_action(session, new_user, action, can_do):
     else:
         with pytest.raises(Exception):
             _audit_action()
-
-
-def test_access_token(db, session, new_user):
-    """Test user access token use cases."""
-    assert new_user.access_token
-    assert new_user.access_token_status == UserTokenStatus.active.name
-    assert len(new_user.tokens) == 1
-    assert new_user.active_token.type_ == UserTokenType.reana
-
-    # Assign second active access token
-    with pytest.raises(Exception) as e:
-        new_user.access_token = "new_token"
-    assert "has already an active access token" in e.value.args[0]
-
-    # Revoke token
-    new_user.active_token.status = UserTokenStatus.revoked.name
-    session.commit()
-    assert not new_user.access_token
-    assert not new_user.active_token
-    assert new_user.access_token_status == UserTokenStatus.revoked.name
-
-    # User requests token
-    new_user.request_access_token()
-    assert not new_user.access_token
-    assert new_user.access_token_status == UserTokenStatus.requested.name
-
-    # Tries to request again
-    with pytest.raises(Exception) as e:
-        new_user.request_access_token()
-    assert "has already requested an access token" in e.value.args[0]
-
-    # Grant new token
-    new_user.access_token = "new_token"
-    session.commit()
-    assert new_user.access_token == "new_token"
-    assert len(new_user.tokens) == 2
-
-    # Status of most recent access token
-    assert new_user.access_token_status == UserTokenStatus.active.name
 
 
 @mock.patch(

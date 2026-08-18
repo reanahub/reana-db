@@ -9,12 +9,15 @@
 """REANA-DB utils tests."""
 
 from __future__ import absolute_import, print_function
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
 
 import mock
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from reana_commons.config import SHARED_VOLUME_PATH
 
@@ -25,11 +28,9 @@ from reana_db.models import (
     InteractiveSession,
     User,
     UserResource,
-    UserToken,
-    UserTokenStatus,
-    UserTokenType,
     Workflow,
 )
+from reana_db.secrets import compute_lookup_digest
 from reana_db.utils import (
     _advance_user_cpu_quota_period_if_needed,
     _add_months,
@@ -315,9 +316,9 @@ def test_update_users_cpu_quota_override_bypasses_policy_gate(monkeypatch):
 def test_update_users_cpu_quota_bulk_drives_from_quota_rows(monkeypatch):
     """Bulk CPU quota maintenance scans CPU quota rows, not the whole user table.
 
-    Driving from ``UserResource`` still includes JWT-only and legacy accounts
-    (they hold a quota row but no ``UserToken``) while avoiding a full ``user_``
-    table scan and a per-account quota lookup.
+    Driving from ``UserResource`` still includes accounts not yet linked to
+    an identity, since every account has a quota row, while avoiding a full
+    ``user_`` table scan and a per-account quota lookup.
     """
     session = mock.MagicMock()
     quota_rows = [
@@ -363,10 +364,9 @@ def test_update_users_cpu_quota_bulk_drives_from_quota_rows(monkeypatch):
 
 
 def test_change_key_rotates_every_encrypted_column(db, session):
-    """Key rotation covers legacy tokens and newer encrypted secrets."""
+    """Key rotation covers every encrypted secret column."""
     old_key = f"old-{uuid4()}"
     new_key = db_config.DB_SECRET_KEY
-    token_value = f"token-{uuid4()}"
     webhook_value = f"webhook-{uuid4()}"
     session_value = f"session-{uuid4()}"
 
@@ -375,9 +375,12 @@ def test_change_key_rotates_every_encrypted_column(db, session):
         # tests. Key rotation assumes one current key across the database, so
         # isolate the encrypted columns before creating old-key fixtures.
         session.query(InteractiveSession).delete(synchronize_session=False)
-        session.query(UserToken).delete(synchronize_session=False)
         session.query(User).update(
-            {"gitlab_webhook_secret": None}, synchronize_session=False
+            {
+                "gitlab_webhook_secret": None,
+                "gitlab_webhook_secret_digest": None,
+            },
+            synchronize_session=False,
         )
         session.commit()
         db_config.DB_SECRET_KEY = old_key
@@ -387,21 +390,15 @@ def test_change_key_rotates_every_encrypted_column(db, session):
         )
         session.add(user)
         session.flush()
-        user_token = UserToken(
-            token=token_value,
-            status=UserTokenStatus.active,
-            type_=UserTokenType.reana,
-            user_id=user.id_,
-        )
         interactive_session = InteractiveSession(
             name=f"session-{uuid4()}",
             path=f"/sessions/{uuid4()}",
             owner_id=user.id_,
             session_secret=session_value,
         )
-        session.add_all([user_token, interactive_session])
+        session.add(interactive_session)
         session.commit()
-        ids = (user.id_, user_token.id_, interactive_session.id_)
+        ids = (user.id_, interactive_session.id_)
         session.expunge_all()
 
         db_config.DB_SECRET_KEY = new_key
@@ -411,13 +408,260 @@ def test_change_key_rotates_every_encrypted_column(db, session):
         assert session.query(User).filter_by(
             id_=ids[0]
         ).one().gitlab_webhook_secret == (webhook_value)
-        assert session.query(UserToken).filter_by(id_=ids[1]).one().token == token_value
         assert (
-            session.query(InteractiveSession).filter_by(id_=ids[2]).one().session_secret
+            session.query(InteractiveSession).filter_by(id_=ids[1]).one().session_secret
             == session_value
         )
     finally:
         db_config.DB_SECRET_KEY = new_key
+
+
+def test_change_key_raises_actionable_error_on_undecryptable_secret(db, session):
+    """A secret undecryptable under either key must fail loudly, not silently.
+
+    Prior to the Task 4.2 fix (PR269-11), this test reproduced the ordinary
+    TOCTOU race -- a secret written under the *new* key before rotation ran
+    -- and asserted it raised. That is no longer the expected behaviour: the
+    fix makes ``change_key_encrypted_columns`` try each value under
+    ``old_key`` first and silently accept it if it instead decrypts under
+    ``new_key``, since that means a concurrent writer already rotated it
+    correctly. See ``test_change_key_recovers_from_concurrent_new_key_write``
+    below for that now-passing race scenario, and for proof that a second
+    call is not needed to make it succeed.
+
+    What must still raise is a secret that decrypts under *neither* key --
+    e.g. genuine data corruption, or ciphertext from some unrelated key --
+    which this test reproduces by writing a secret under a third key that is
+    neither ``old_key`` nor ``new_key``. Decrypting it here must not surface
+    as a raw sqlalchemy_utils padding/decode error -- it should be a clear,
+    actionable RuntimeError telling the operator what happened, and it must
+    not silently corrupt the row.
+    """
+    old_key = f"old-{uuid4()}"
+    new_key = db_config.DB_SECRET_KEY
+    third_key = f"third-{uuid4()}"
+    corrupted_user_email = f"{uuid4()}@reana.io"
+
+    try:
+        session.query(InteractiveSession).delete(synchronize_session=False)
+        session.query(User).update(
+            {
+                "gitlab_webhook_secret": None,
+                "gitlab_webhook_secret_digest": None,
+            },
+            synchronize_session=False,
+        )
+        session.commit()
+
+        # A secret encrypted under neither old_key nor new_key at all --
+        # undecryptable under both, by construction.
+        db_config.DB_SECRET_KEY = third_key
+        corrupted_user = User(
+            email=corrupted_user_email,
+            gitlab_webhook_secret=f"webhook-{uuid4()}",
+        )
+        session.add(corrupted_user)
+        session.commit()
+        corrupted_id = corrupted_user.id_
+        session.expunge_all()
+
+        db_config.DB_SECRET_KEY = new_key
+        with pytest.raises(RuntimeError, match="genuine data corruption"):
+            change_key_encrypted_columns(old_key)
+
+        # The corrupted row must be untouched, not silently overwritten.
+        db_config.DB_SECRET_KEY = third_key
+        session.expunge_all()
+        assert (
+            session.query(User).filter_by(id_=corrupted_id).one().gitlab_webhook_secret
+            is not None
+        )
+    finally:
+        db_config.DB_SECRET_KEY = new_key
+        # corrupted_user's secret is still undecryptable under new_key --
+        # leaving it would make every later test that reads all users'
+        # gitlab_webhook_secret hit the same decode error this test exists
+        # to catch. Clear it under the key it was actually written with so
+        # nothing undecryptable survives into other tests.
+        db_config.DB_SECRET_KEY = third_key
+        session.query(User).filter(User.email == corrupted_user_email).update(
+            {
+                "gitlab_webhook_secret": None,
+                "gitlab_webhook_secret_digest": None,
+            },
+            synchronize_session=False,
+        )
+        session.commit()
+        db_config.DB_SECRET_KEY = new_key
+
+
+def test_change_key_recovers_from_concurrent_new_key_write(db, session):
+    """Retry-safety: a row raced by a live writer mid-rotation must not wedge.
+
+    Reproduces the exact scenario PR269-11 fixes: while rotation is running,
+    a live reana-server process (already deployed with the new key, as the
+    runbook requires) renews a webhook secret for a row rotation has not yet
+    reached -- that row is now already encrypted under ``new_key``. Before
+    the fix, rotation reading that row under ``old_key`` would raise, and
+    every retry would hit the exact same row and fail identically forever,
+    since retrying re-reads the same now-new-key-encrypted ciphertext under
+    ``old_key`` again. The fix makes each value tried under ``old_key``
+    first, falling back to ``new_key`` (and skipping silently) on failure,
+    so this is no longer a dead end.
+
+    Uses the same real-Postgres, real-thread race pattern as
+    ``test_initialise_default_resources_converges_across_sessions`` in
+    ``tests/test_models.py`` (an independent ``sessionmaker`` session racing
+    the test's own session against actual Postgres), but coordinated via a
+    reusable two-phase ``Barrier`` instead of a ``before_flush`` listener,
+    since ``change_key_encrypted_columns`` has no flush to hook during its
+    read phase. ``change_key_encrypted_columns`` accepts a private
+    ``_after_ids_fetched`` test hook for exactly this: it is invoked once
+    rotation has fetched the ids to rotate but before it reads any row's
+    value, which is the precise window the race needs to land in.
+    """
+    old_key = f"old-{uuid4()}"
+    new_key = db_config.DB_SECRET_KEY
+    racing_user_email = f"{uuid4()}@reana.io"
+    old_webhook_value = f"old-webhook-{uuid4()}"
+    new_webhook_value = f"new-webhook-{uuid4()}"
+
+    independent_session_factory = sessionmaker(bind=database.engine)
+    # Reused for two rendezvous points (a threading.Barrier resets itself
+    # once every party has passed through, so it is safe to await twice):
+    #   1. rotation has captured its id list -> safe for the writer to write
+    #   2. the writer's write is committed -> safe for rotation to read rows
+    race_barrier = Barrier(2)
+
+    def live_server_write():
+        """Simulate reana-server renewing this secret mid-rotation."""
+        race_barrier.wait(timeout=10)  # (1) wait for rotation's id list
+        worker_session = independent_session_factory()
+        try:
+            db_config.DB_SECRET_KEY = new_key
+            worker_session.query(User).filter_by(id_=racing_id).update(
+                {
+                    "gitlab_webhook_secret": new_webhook_value,
+                    "gitlab_webhook_secret_digest": compute_lookup_digest(
+                        new_webhook_value
+                    ),
+                },
+                synchronize_session=False,
+            )
+            worker_session.commit()
+        finally:
+            worker_session.close()
+        race_barrier.wait(timeout=10)  # (2) tell rotation the write landed
+
+    def rotation_sync_hook():
+        """Rendezvous (1) then (2), matching ``live_server_write``'s two waits."""
+        race_barrier.wait(timeout=10)  # (1) id list captured -> writer may write
+        race_barrier.wait(timeout=10)  # (2) writer's write landed -> safe to read
+
+    def run_rotation():
+        return change_key_encrypted_columns(
+            old_key, _after_ids_fetched=rotation_sync_hook
+        )
+
+    try:
+        session.query(InteractiveSession).delete(synchronize_session=False)
+        session.query(User).update(
+            {
+                "gitlab_webhook_secret": None,
+                "gitlab_webhook_secret_digest": None,
+            },
+            synchronize_session=False,
+        )
+        session.commit()
+
+        # The row rotation will race: written under old_key, like any
+        # ordinary pre-rotation secret.
+        db_config.DB_SECRET_KEY = old_key
+        racing_user = User(
+            email=racing_user_email, gitlab_webhook_secret=old_webhook_value
+        )
+        session.add(racing_user)
+        session.commit()
+        racing_id = racing_user.id_
+        session.expunge_all()
+        db_config.DB_SECRET_KEY = new_key
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            rotation_future = executor.submit(run_rotation)
+            writer_future = executor.submit(live_server_write)
+            writer_future.result(timeout=10)
+            rotation_future.result(timeout=10)
+
+        # The race must not have raised: the row is already correctly
+        # encrypted under new_key (by the concurrent writer) and rotation
+        # must have silently left it alone rather than erroring.
+        db_config.DB_SECRET_KEY = new_key
+        session.expunge_all()
+        assert (
+            session.query(User).filter_by(id_=racing_id).one().gitlab_webhook_secret
+            == new_webhook_value
+        )
+
+        # Retry-safety is the actual regression guard: a second call, run
+        # after the race window has closed, must also complete without
+        # raising and without disturbing the already-correct value. Before
+        # the fix, this exact row would have failed identically on every
+        # retry forever.
+        change_key_encrypted_columns(old_key)
+        session.expunge_all()
+        assert (
+            session.query(User).filter_by(id_=racing_id).one().gitlab_webhook_secret
+            == new_webhook_value
+        )
+    finally:
+        # Deleting racing_user outright would hit the FK from its
+        # auto-created UserResource quota rows; clearing the secret (like
+        # the other change_key_* tests' cleanup) is enough to keep it from
+        # affecting later tests that read every user's gitlab_webhook_secret.
+        db_config.DB_SECRET_KEY = new_key
+        session.query(User).filter(User.email == racing_user_email).update(
+            {
+                "gitlab_webhook_secret": None,
+                "gitlab_webhook_secret_digest": None,
+            },
+            synchronize_session=False,
+        )
+        session.commit()
+
+
+def test_change_key_locks_each_value_before_reencrypting(monkeypatch):
+    """Rotation must lock a row before its plaintext is read and rewritten."""
+    fake_session = mock.MagicMock()
+    user_ids_query = mock.MagicMock()
+    session_ids_query = mock.MagicMock()
+    value_query = mock.MagicMock()
+    update_query = mock.MagicMock()
+    user_id = uuid4()
+
+    user_ids_query.filter.return_value = user_ids_query
+    user_ids_query.all.return_value = [SimpleNamespace(id_=user_id)]
+    session_ids_query.filter.return_value = session_ids_query
+    session_ids_query.all.return_value = []
+    value_query.filter.return_value = value_query
+    value_query.with_for_update.return_value = value_query
+    value_query.scalar.return_value = "old-webhook-secret"
+    update_query.filter.return_value = update_query
+    fake_session.query.side_effect = [
+        user_ids_query,
+        session_ids_query,
+        value_query,
+        update_query,
+    ]
+    monkeypatch.setattr(database, "Session", fake_session)
+    monkeypatch.setattr(db_config, "DB_SECRET_KEY", "new-key")
+
+    change_key_encrypted_columns("old-key")
+
+    value_query.with_for_update.assert_called_once_with()
+    update_query.update.assert_called_once_with(
+        {"gitlab_webhook_secret": "old-webhook-secret"}
+    )
+    fake_session.commit.assert_called_once_with()
 
 
 def test_update_users_cpu_quota_periodic_path_loads_only_needed_fields(monkeypatch):

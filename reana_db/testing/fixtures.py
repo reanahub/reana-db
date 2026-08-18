@@ -98,8 +98,8 @@ def user0(app, session):
     Scope: function
 
     This fixture creates an admin user with a default UUID
-    ``00000000-0000-0000-0000-000000000000``, ``email`` `user0@reana.io`
-    and ``access_token`` ``user0token`` and returns it.
+    ``00000000-0000-0000-0000-000000000000`` and ``email`` `user0@reana.io`,
+    and returns it.
     """
     from reana_db.models import User
 
@@ -107,7 +107,7 @@ def user0(app, session):
     user = session.query(User).filter_by(id_=user0_id).first()
     if not user:
         with patch("reana_db.database.Session", new=session):
-            user = User(id_=user0_id, email="user0@reana.io", access_token="user0token")
+            user = User(id_=user0_id, email="user0@reana.io")
         session.add(user)
         session.commit()
     return user
@@ -120,8 +120,8 @@ def user1(app, session):
     Scope: function
 
     This fixture creates a user with UUID
-    ``11111111-1111-1111-1111-111111111111``, ``email`` `user1@reana.io`
-    and ``access_token`` ``user1token`` and returns it.
+    ``11111111-1111-1111-1111-111111111111`` and ``email`` `user1@reana.io`,
+    and returns it.
     """
     from reana_db.models import User
 
@@ -129,7 +129,7 @@ def user1(app, session):
     user = session.query(User).filter_by(id_=user1_id).first()
     if not user:
         with patch("reana_db.database.Session", new=session):
-            user = User(id_=user1_id, email="user1@reana.io", access_token="user1token")
+            user = User(id_=user1_id, email="user1@reana.io")
         session.add(user)
         session.commit()
     return user
@@ -142,8 +142,8 @@ def user2(app, session):
     Scope: function
 
     This fixture creates a user with UUID
-    ``22222222-2222-2222-2222-222222222222``, ``email`` `user2@reana.io`
-    and ``access_token`` ``user2token`` and returns it.
+    ``22222222-2222-2222-2222-222222222222`` and ``email`` `user2@reana.io`,
+    and returns it.
     """
     from reana_db.models import User
 
@@ -151,7 +151,7 @@ def user2(app, session):
     user = session.query(User).filter_by(id_=user2_id).first()
     if not user:
         with patch("reana_db.database.Session", new=session):
-            user = User(id_=user2_id, email="user2@reana.io", access_token="user2token")
+            user = User(id_=user2_id, email="user2@reana.io")
         session.add(user)
         session.commit()
     return user

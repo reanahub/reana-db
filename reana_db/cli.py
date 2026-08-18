@@ -56,7 +56,20 @@ def init():
     help="Previous key used to encrypt database columns.",
 )
 def migrate_secret_key(old_key):
-    """Change the secret key used to encrypt database columns."""
+    """Change the secret key used to encrypt database columns.
+
+    REANA must already be deployed with the new key in ``REANA_SECRET_KEY``
+    before this command runs, since it needs both the old key (to decrypt)
+    and the new one (to re-encrypt). Deploying the new key first means any
+    secret written after that point (a renewed GitLab webhook authorization,
+    a new interactive session) is already encrypted under the new key -- if
+    this command tries to decrypt it with the old one, it fails loudly with
+    an actionable error rather than being written twice.
+
+    Quiesce GitLab webhook deliveries and interactive-session creation (or
+    scale reana-server down) for the duration of this command, then scale
+    back up once it reports success.
+    """
     click.echo("Migrating secret key...")
 
     try:

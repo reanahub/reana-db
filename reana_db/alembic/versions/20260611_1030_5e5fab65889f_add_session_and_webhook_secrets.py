@@ -4,6 +4,11 @@ Revision ID: 5e5fab65889f
 Revises: 25a9293c27cc
 Create Date: 2026-06-11 10:30:00.000000
 
+Maintenance-window note: this migration's unique constraint on ``user_``
+(``gitlab_webhook_secret``) takes the same ``ACCESS EXCLUSIVE`` lock for its
+build duration as the identity-columns migration immediately before it --
+see that migration's note. On a large ``user_`` table, plan both together
+during one maintenance window.
 """
 
 import sqlalchemy as sa
