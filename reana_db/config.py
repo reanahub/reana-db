@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023, 2026 CERN.
+# Copyright (C) 2018, 2019, 2020, 2021, 2022 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -30,8 +30,20 @@ DB_HOST = os.getenv("REANA_DB_HOST", REANA_INFRASTRUCTURE_COMPONENTS_HOSTNAMES["
 DB_PORT = os.getenv("REANA_DB_PORT", "5432")
 """Database service port."""
 
-DB_SECRET_KEY = os.getenv("REANA_SECRET_KEY", "reana")
-"""Database encryption secret key."""
+DB_SECRET_KEY = os.getenv("REANA_SECRET_KEY")
+"""Database encryption secret key.
+
+No default on purpose: silently falling back to a well-known literal
+(e.g. ``"reana"``) would let a deployment that forgets to set
+``REANA_SECRET_KEY`` encrypt every token/webhook-secret/session-secret
+under a guessable key without any error. ``reana-server`` and
+``reana-workflow-controller`` already fail closed on a missing key via
+their own factory validation, and the Helm chart's ``app-secrets.yaml``
+requires it at install time; this ``None`` default makes any other
+caller (CLI tooling, ad-hoc scripts) fail loudly the first time it
+actually needs to encrypt/decrypt a column, instead of succeeding
+silently under a known key.
+"""
 
 SQLALCHEMY_DATABASE_URI = os.getenv(
     "REANA_SQLALCHEMY_DATABASE_URI",
@@ -106,3 +118,13 @@ PERIODIC_RESOURCE_QUOTA_UPDATE_POLICY = strtobool(
     os.getenv("REANA_PERIODIC_RESOURCE_QUOTA_UPDATE_POLICY", "false")
 )
 """Whether to run the periodic (cronjob) resource quota updater."""
+
+REANA_GROUP_MEMBERSHIP_MAX_AGE = int(
+    os.getenv("REANA_GROUP_MEMBERSHIP_MAX_AGE", "86400")
+)
+"""Maximum age in seconds of a user's group membership snapshot.
+
+Group-derived workflow access is denied when the user's membership snapshot
+is older than this value (fail-closed). The snapshot is refreshed on every
+login/JIT provisioning and by the periodic group-membership refresh job.
+"""

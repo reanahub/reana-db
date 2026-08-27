@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2026 CERN.
+# Copyright (C) 2018, 2019, 2020, 2021, 2022, 2023 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -20,7 +20,7 @@ from reana_db.config import (
     PERIODIC_RESOURCE_QUOTA_UPDATE_POLICY,
     WORKFLOW_TERMINATION_QUOTA_UPDATE_POLICY,
 )
-from sqlalchemy import func, inspect
+from sqlalchemy import and_, exists, func, inspect, or_
 from sqlalchemy.orm import defer, load_only
 
 
@@ -60,6 +60,92 @@ def split_run_number(run_number):
     return int(run_number), 0
 
 
+def active_workflow_share_criterion(user_uuid):
+    """Build a SQLAlchemy criterion selecting workflows actively shared with a user.
+
+    The criterion is correlated against ``Workflow`` and must be used inside
+    a query on ``Workflow``. It covers:
+
+    - direct user shares (``user_workflow``) whose ``valid_until`` has not
+      passed (a ``valid_until`` date remains active through that UTC date);
+    - group shares (``group_workflow``) with the same expiration semantics,
+      where the user additionally has a fresh membership snapshot
+      (``synced_at`` within ``REANA_GROUP_MEMBERSHIP_MAX_AGE``, fail-closed).
+
+    Implemented with ``EXISTS`` subqueries instead of joins so that paginated
+    workflow listings never produce duplicate rows.
+
+    :param user_uuid: UUID of the user whose access is being checked.
+    :return: SQLAlchemy boolean criterion.
+    """
+    from reana_db.config import REANA_GROUP_MEMBERSHIP_MAX_AGE
+    from reana_db.models import (
+        GroupWorkflow,
+        UserGroupMembership,
+        UserWorkflow,
+        Workflow,
+    )
+
+    now = datetime.utcnow()
+    # A `valid_until` date remains active through that UTC date.
+    today_start = datetime.combine(now.date(), datetime.min.time())
+    membership_freshness_threshold = now - timedelta(
+        seconds=REANA_GROUP_MEMBERSHIP_MAX_AGE
+    )
+
+    user_share = exists().where(
+        and_(
+            UserWorkflow.workflow_id == Workflow.id_,
+            UserWorkflow.user_id == user_uuid,
+            or_(
+                UserWorkflow.valid_until.is_(None),
+                UserWorkflow.valid_until >= today_start,
+            ),
+        )
+    )
+    group_share = exists().where(
+        and_(
+            GroupWorkflow.workflow_id == Workflow.id_,
+            or_(
+                GroupWorkflow.valid_until.is_(None),
+                GroupWorkflow.valid_until >= today_start,
+            ),
+            UserGroupMembership.group_id == GroupWorkflow.group_id,
+            UserGroupMembership.user_id == user_uuid,
+            UserGroupMembership.synced_at >= membership_freshness_threshold,
+        )
+    )
+    return or_(user_share, group_share)
+
+
+def user_can_read_workflow(user_uuid, workflow_id):
+    """Check whether a user may read a workflow.
+
+    A workflow is readable by its owner, by users it is actively shared
+    with, and by members of groups it is actively shared with (see
+    :func:`active_workflow_share_criterion` for expiration and freshness
+    semantics).
+
+    :param user_uuid: UUID of the user.
+    :param workflow_id: UUID of the workflow.
+    :rtype: bool
+    """
+    from reana_db.database import Session
+    from reana_db.models import Workflow
+
+    return Session.query(
+        Session.query(Workflow)
+        .filter(
+            Workflow.id_ == workflow_id,
+            or_(
+                Workflow.owner_id == user_uuid,
+                active_workflow_share_criterion(user_uuid),
+            ),
+        )
+        .exists()
+    ).scalar()
+
+
 def _get_workflow_with_uuid_or_name(
     uuid_or_name, user_uuid, include_shared_workflows=False
 ):
@@ -81,7 +167,7 @@ def _get_workflow_with_uuid_or_name(
     :rtype: reana-db.models.Workflow
     """
     from reana_db.database import Session
-    from reana_db.models import UserWorkflow, Workflow
+    from reana_db.models import Workflow
 
     # Check existence
     if not uuid_or_name:
@@ -159,14 +245,13 @@ def _get_workflow_with_uuid_or_name(
         if include_shared_workflows:
             workflow = (
                 Session.query(Workflow)
-                .outerjoin(UserWorkflow, UserWorkflow.workflow_id == Workflow.id_)
                 .filter(
                     (Workflow.name == workflow_name)
                     & (Workflow.run_number_major == run_number_major)
                     & (Workflow.run_number_minor == run_number_minor)
                     & (
                         (Workflow.owner_id == user_uuid)
-                        | (UserWorkflow.user_id == user_uuid)
+                        | active_workflow_share_criterion(user_uuid)
                     )
                 )
                 .one_or_none()
@@ -202,17 +287,16 @@ def _get_workflow_by_name(workflow_name, user_uuid, include_shared_workflows=Fal
     :rtype: reana-db.models.Workflow
     """
     from reana_db.database import Session
-    from reana_db.models import UserWorkflow, Workflow
+    from reana_db.models import Workflow
 
     if include_shared_workflows:
         workflow = (
             Session.query(Workflow)
-            .outerjoin(UserWorkflow, Workflow.id_ == UserWorkflow.workflow_id)
             .filter(
                 (Workflow.name == workflow_name)
                 & (
                     (Workflow.owner_id == user_uuid)
-                    | (UserWorkflow.user_id == user_uuid)
+                    | active_workflow_share_criterion(user_uuid)
                 )
             )
             .order_by(
@@ -250,17 +334,16 @@ def _get_workflow_by_uuid(workflow_uuid, user_uuid, include_shared_workflows=Fal
     :rtype: reana-db.models.Workflow
     """
     from reana_db.database import Session
-    from reana_db.models import UserWorkflow, Workflow
+    from reana_db.models import Workflow
 
     if include_shared_workflows:
         workflow = (
             Session.query(Workflow)
-            .outerjoin(UserWorkflow, Workflow.id_ == UserWorkflow.workflow_id)
             .filter(
                 (Workflow.id_ == workflow_uuid)
                 & (
                     (Workflow.owner_id == user_uuid)
-                    | (UserWorkflow.user_id == user_uuid)
+                    | active_workflow_share_criterion(user_uuid)
                 )
             )
             .first()
@@ -634,10 +717,7 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
     from reana_db.database import Session
     from reana_db.models import (
         ResourceType,
-        User,
         UserResource,
-        UserToken,
-        UserTokenStatus,
         Workflow,
         WorkflowResource,
     )
@@ -647,26 +727,20 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
 
     cpu_resource = get_default_quota_resource(ResourceType.cpu.name)
 
+    # Drive maintenance from the CPU quota rows themselves. Only accounts that
+    # actually hold a CPU quota need updating, and every account (linked or
+    # not yet linked to an identity) has a ``UserResource`` row -- so this
+    # avoids a full ``user_`` table scan and one quota lookup per account.
+    # ``UserResource.user_id`` is all the per-user identity the loop needs,
+    # so no ``User`` row is materialised.
+    quota_query = Session.query(UserResource).filter_by(resource_id=cpu_resource.id_)
     if user:
-        users = [user]
-    else:
-        users = (
-            Session.query(User)
-            .join(UserToken)
-            .filter_by(status=UserTokenStatus.active)  # skip users with no active token
-            .all()
-        )
-    timer_user = Timer("User CPU quota usage update", total=len(users))
-    for user in users:
-        user_resource_quota = (
-            Session.query(UserResource)
-            .filter_by(user_id=user.id_, resource_id=cpu_resource.id_)
-            .first()
-        )
+        quota_query = quota_query.filter_by(user_id=user.id_)
+    user_resource_quotas = quota_query.all()
 
-        if not user_resource_quota:
-            timer_user.count_event()
-            continue
+    timer_user = Timer("User CPU quota usage update", total=len(user_resource_quotas))
+    for user_resource_quota in user_resource_quotas:
+        owner_id = user_resource_quota.user_id
 
         _advance_user_cpu_quota_period_if_needed(user_resource_quota)
 
@@ -686,7 +760,7 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
                     defer(Workflow.logs),
                     defer(Workflow.reana_specification),
                 )
-                .filter_by(owner_id=user.id_)
+                .filter_by(owner_id=owner_id)
                 .all()
             )
             cpu_milliseconds = sum(
@@ -701,7 +775,7 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
                 Session.query(func.sum(WorkflowResource.quota_used))
                 .filter(WorkflowResource.resource_id == cpu_resource.id_)
                 .join(Workflow, WorkflowResource.workflow_id == Workflow.id_)
-                .filter(Workflow.owner_id == user.id_)
+                .filter(Workflow.owner_id == owner_id)
                 .scalar()
             )
 
@@ -855,31 +929,138 @@ def update_workflows_disk_quota(override_policy_checks: bool = False) -> None:
         timer.count_event()
 
 
-def change_key_encrypted_columns(old_key):
+def change_key_encrypted_columns(old_key, _after_ids_fetched=None):
     """Re-encrypt database columns with new secret key.
 
     REANA should be already deployed with the new secret key in `REANA_SECRET_KEY`.
     The old key is needed to decrypt the database and is passed as parameter.
+
+    Retry-safe under mixed-key state: a live server process (already running
+    with the new key) may write a secret *after* the new key was deployed but
+    *before* this rotation reaches that row -- that row is then already
+    encrypted under ``new_key``. Each value is read by trying ``old_key``
+    first; a value that fails to decrypt under ``old_key`` but succeeds under
+    ``new_key`` was already correctly rotated by that concurrent writer and is
+    skipped silently (not re-encrypted, not an error). Only a value that
+    fails to decrypt under *both* keys is a genuine problem, and raises.
+    Re-running this function against the same database is therefore always
+    safe, including while reana-server keeps writing new secrets under
+    ``new_key`` throughout the rotation window. Each value is selected with
+    ``FOR UPDATE`` before it is decrypted and rewritten. This prevents a
+    concurrent new-key write from landing between the old-key read and the
+    rotation update and then being overwritten by stale plaintext. Locks are
+    held until the single rotation transaction commits.
+
+    Reads one row at a time (rather than one bulk query per table) so each
+    row's decrypt failure can be handled individually -- an accepted O(n)
+    round-trip cost for this rare, operator-invoked admin operation, traded
+    for retry-safety.
+
+    :param _after_ids_fetched: private test hook, invoked with no arguments
+        once the row ids to rotate have been fetched, before any row's
+        value is read. Used by tests to deterministically interleave a
+        concurrent write with this function's per-row reads; production
+        callers must not pass it.
+    :raises RuntimeError: when a row cannot be decrypted with either
+        ``old_key`` or ``new_key``. This is not the expected mid-rotation
+        race (that case is handled transparently, see above) -- it means the
+        stored value doesn't match either key at all, e.g. genuine data
+        corruption or a third, unrelated key. Investigate before retrying.
     """
+    from sqlalchemy_utils.types.encrypted.padding import InvalidPaddingError
+    from sqlalchemy_utils.types.encrypted.encrypted_type import InvalidCiphertextError
+
     from reana_db.database import Session
-    from reana_db.models import UserToken
+    from reana_db.models import InteractiveSession, User
     from reana_db import config
 
     new_key = config.DB_SECRET_KEY
+    decrypt_errors = (
+        InvalidCiphertextError,
+        InvalidPaddingError,
+        ValueError,
+        UnicodeDecodeError,
+    )
 
-    # set old key to be able to decrypt columns in database
-    config.DB_SECRET_KEY = old_key
+    def _read_value_under_key(key, value_column, id_column, id_value):
+        """Read one row's ``value_column`` with ``config.DB_SECRET_KEY=key``."""
+        config.DB_SECRET_KEY = key
+        try:
+            value = (
+                Session.query(value_column)
+                .filter(id_column == id_value)
+                .with_for_update()
+                .scalar()
+            )
+            Session.expunge_all()
+            return value
+        finally:
+            config.DB_SECRET_KEY = new_key
 
-    # read the columns from the database
-    user_tokens = Session.query(UserToken.id_, UserToken.token).all()
+    def _rotate_rows(model, id_column, value_column, id_values):
+        """Re-encrypt ``value_column`` under ``new_key`` for each id.
+
+        Rows that fail to decrypt under ``old_key`` but succeed under
+        ``new_key`` were already rotated by a concurrent writer and are left
+        untouched. Rows that fail under both keys raise ``RuntimeError``.
+        """
+        for id_value in id_values:
+            try:
+                value = _read_value_under_key(
+                    old_key, value_column, id_column, id_value
+                )
+            except decrypt_errors:
+                try:
+                    _read_value_under_key(new_key, value_column, id_column, id_value)
+                except decrypt_errors as error:
+                    raise RuntimeError(
+                        f"Could not decrypt {model.__name__} row {id_value} "
+                        "with either the old or the new key. This is not "
+                        "the expected mid-rotation race (a row fully "
+                        "written under the new key decrypts fine under the "
+                        "new key) -- it indicates genuine data corruption "
+                        "or an unrelated key. Investigate before retrying."
+                    ) from error
+                # Already re-encrypted under new_key by a concurrent writer.
+                continue
+            Session.query(model).filter(id_column == id_value).update(
+                {value_column.key: value}
+            )
+
+    webhook_secret_ids = [
+        row.id_
+        for row in Session.query(User.id_)
+        .filter(User.gitlab_webhook_secret.isnot(None))
+        .all()
+    ]
+    interactive_session_ids = [
+        row.id_
+        for row in Session.query(InteractiveSession.id_)
+        .filter(InteractiveSession.session_secret.isnot(None))
+        .all()
+    ]
     Session.expunge_all()
 
-    # revert to new key
-    config.DB_SECRET_KEY = new_key
+    if _after_ids_fetched is not None:
+        _after_ids_fetched()
 
-    # write columns to the database to encrypt them with new key
-    for user_token in user_tokens:
-        Session.query(UserToken).filter_by(id_=user_token.id_).update(
-            {"token": user_token.token}
+    try:
+        _rotate_rows(User, User.id_, User.gitlab_webhook_secret, webhook_secret_ids)
+        _rotate_rows(
+            InteractiveSession,
+            InteractiveSession.id_,
+            InteractiveSession.session_secret,
+            interactive_session_ids,
         )
+    except BaseException:
+        # Undo any bulk .update() already queued by an earlier, successful
+        # _rotate_rows() call in this same pass -- otherwise a genuine
+        # decrypt failure on e.g. session_secret would leave the
+        # already-rotated gitlab_webhook_secret rows uncommitted-but-pending
+        # in the Session, ready to be silently persisted by an unrelated
+        # later commit() on the same Session.
+        Session.rollback()
+        raise
+    finally:
+        config.DB_SECRET_KEY = new_key
     Session.commit()

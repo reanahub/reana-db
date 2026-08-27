@@ -8,23 +8,30 @@
 
 """REANA-DB models tests."""
 
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+import hashlib
+from threading import Barrier
+from types import SimpleNamespace
 from uuid import uuid4
 
 import mock
 import pytest
+from sqlalchemy import event, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 
 from reana_db import database
 import reana_db.models as models_module
 from reana_db.models import (
     ALLOWED_WORKFLOW_STATUS_TRANSITIONS,
     AuditLogAction,
+    InteractiveSession,
     Resource,
     ResourceUnit,
     ResourceType,
     JobStatus,
-    UserTokenStatus,
-    UserTokenType,
+    User,
     Workflow,
     WorkflowResource,
     RunStatus,
@@ -39,6 +46,219 @@ from reana_db.utils import (
     update_users_disk_quota,
     update_workspace_retention_rules,
 )
+
+
+def test_user_idp_identity_is_unique(db, session):
+    """Test that one issuer-subject pair identifies at most one user."""
+    issuer = f"https://issuer-{uuid4()}.example.org"
+    subject = str(uuid4())
+    session.add(
+        User(
+            email=f"{uuid4()}@reana.io",
+            idp_issuer=issuer,
+            idp_subject=subject,
+        )
+    )
+    session.commit()
+
+    session.add(
+        User(
+            email=f"{uuid4()}@reana.io",
+            idp_issuer=issuer,
+            idp_subject=subject,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+@pytest.mark.parametrize(
+    "idp_issuer,idp_subject",
+    [
+        ("https://issuer.example.org", None),
+        (None, "subject"),
+    ],
+)
+def test_user_idp_identity_must_be_complete(db, session, idp_issuer, idp_subject):
+    """Test that an IdP identity cannot be only partially populated."""
+    session.add(
+        User(
+            email=f"{uuid4()}@reana.io",
+            idp_issuer=idp_issuer,
+            idp_subject=idp_subject,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_encrypted_secrets_round_trip_after_reload(db, session):
+    """Test encrypted user and session secrets after an ORM reload."""
+    webhook_secret = f"webhook-{uuid4()}"
+    session_secret = f"session-{uuid4()}"
+    user = User(
+        email=f"{uuid4()}@reana.io",
+        gitlab_webhook_secret=webhook_secret,
+        gitlab_webhook_secret_expires_at=datetime.utcnow() + timedelta(days=1),
+    )
+    session.add(user)
+    session.commit()
+    user_id = user.id_
+
+    session.expunge(user)
+    reloaded_user = session.query(User).filter_by(id_=user_id).one()
+    assert reloaded_user.gitlab_webhook_secret == webhook_secret
+    assert (
+        reloaded_user.gitlab_webhook_secret_digest
+        == hashlib.sha256(webhook_secret.encode("utf-8")).hexdigest()
+    )
+    assert reloaded_user.gitlab_webhook_secret_expires_at > datetime.utcnow()
+
+    interactive_session = InteractiveSession(
+        name=f"session-{uuid4()}",
+        path=f"/sessions/{uuid4()}",
+        owner_id=user_id,
+        session_secret=session_secret,
+    )
+    session.add(interactive_session)
+    session.commit()
+    interactive_session_id = interactive_session.id_
+
+    session.expunge(interactive_session)
+    reloaded_session = (
+        session.query(InteractiveSession).filter_by(id_=interactive_session_id).one()
+    )
+    assert reloaded_session.session_secret == session_secret
+
+
+def test_webhook_secret_reencryption_is_randomized(db, session):
+    """AES-GCM uses a fresh nonce even when storing the same plaintext again."""
+    secret = f"webhook-{uuid4()}"
+    user = User(email=f"{uuid4()}@reana.io", gitlab_webhook_secret=secret)
+    session.add(user)
+    session.commit()
+    first_ciphertext = session.execute(
+        text("SELECT gitlab_webhook_secret FROM __reana.user_ WHERE id_ = :user_id"),
+        {"user_id": user.id_},
+    ).scalar_one()
+
+    # Force two writes of the original value; assigning the identical Python
+    # value twice without an intermediate change is intentionally elided by
+    # SQLAlchemy's dirty tracking before the type's encryption hook runs.
+    user.gitlab_webhook_secret = f"{secret}-temporary"
+    session.commit()
+    user.gitlab_webhook_secret = secret
+    session.commit()
+    second_ciphertext = session.execute(
+        text("SELECT gitlab_webhook_secret FROM __reana.user_ WHERE id_ = :user_id"),
+        {"user_id": user.id_},
+    ).scalar_one()
+
+    assert bytes(first_ciphertext) != bytes(second_ciphertext)
+    assert (
+        user.gitlab_webhook_secret_digest
+        == hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    )
+
+
+def test_webhook_secret_and_digest_must_be_set_together(db, session):
+    """The database rejects drift between recoverable and lookup values."""
+    user = User(
+        email=f"{uuid4()}@reana.io",
+        gitlab_webhook_secret=f"webhook-{uuid4()}",
+    )
+    session.add(user)
+    session.commit()
+
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "UPDATE __reana.user_ SET gitlab_webhook_secret_digest = NULL "
+                "WHERE id_ = :user_id"
+            ),
+            {"user_id": user.id_},
+        )
+        session.commit()
+    session.rollback()
+
+
+def test_webhook_secret_digest_is_unique(db, session):
+    """Two users cannot be assigned the same webhook bearer secret."""
+    secret = f"webhook-{uuid4()}"
+    session.add(User(email=f"{uuid4()}@reana.io", gitlab_webhook_secret=secret))
+    session.commit()
+
+    session.add(User(email=f"{uuid4()}@reana.io", gitlab_webhook_secret=secret))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_initialise_default_resources_converges_across_sessions(
+    db, session, monkeypatch
+):
+    """Test simultaneous default-resource initialisation converges."""
+    resource_names = {
+        "cpu": f"processing-time-{uuid4()}",
+        "disk": f"shared-storage-{uuid4()}",
+    }
+    monkeypatch.setattr(models_module, "DEFAULT_QUOTA_RESOURCES", resource_names)
+    flush_barrier = Barrier(2)
+    independent_session = sessionmaker(bind=database.engine)
+
+    def initialise_resources():
+        worker_session = independent_session()
+
+        def wait_for_other_session(*args):
+            flush_barrier.wait(timeout=10)
+
+        event.listen(worker_session, "before_flush", wait_for_other_session, once=True)
+        try:
+            return len(Resource.initialise_default_resources(session=worker_session))
+        finally:
+            worker_session.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: initialise_resources(), range(2)))
+
+        assert sorted(results) == [0, len(resource_names)]
+        assert {
+            resource.name
+            for resource in session.query(Resource)
+            .filter(Resource.name.in_(resource_names.values()))
+            .all()
+        } == set(resource_names.values())
+    finally:
+        session.query(Resource).filter(
+            Resource.name.in_(resource_names.values())
+        ).delete(synchronize_session=False)
+        session.commit()
+
+
+def test_initialise_default_resources_preserves_unrelated_integrity_error(
+    monkeypatch,
+):
+    """Test resource initialisation does not hide other integrity failures."""
+    monkeypatch.setattr(
+        models_module,
+        "DEFAULT_QUOTA_RESOURCES",
+        {"cpu": "processing time", "disk": "shared storage"},
+    )
+    original_error = RuntimeError("unrelated constraint")
+    original_error.diag = SimpleNamespace(constraint_name="some_other_constraint")
+    integrity_error = IntegrityError("INSERT", {}, original_error)
+    fake_session = mock.MagicMock()
+    fake_session.query.return_value.all.return_value = []
+    fake_session.commit.side_effect = integrity_error
+
+    with pytest.raises(IntegrityError) as raised_error:
+        Resource.initialise_default_resources(session=fake_session)
+
+    assert raised_error.value is integrity_error
+    fake_session.rollback.assert_called_once_with()
 
 
 def test_initialize_user_quota_limits_uses_user_created_for_period_start(monkeypatch):
@@ -439,45 +659,6 @@ def test_audit_action(session, new_user, action, can_do):
     else:
         with pytest.raises(Exception):
             _audit_action()
-
-
-def test_access_token(db, session, new_user):
-    """Test user access token use cases."""
-    assert new_user.access_token
-    assert new_user.access_token_status == UserTokenStatus.active.name
-    assert len(new_user.tokens) == 1
-    assert new_user.active_token.type_ == UserTokenType.reana
-
-    # Assign second active access token
-    with pytest.raises(Exception) as e:
-        new_user.access_token = "new_token"
-    assert "has already an active access token" in e.value.args[0]
-
-    # Revoke token
-    new_user.active_token.status = UserTokenStatus.revoked.name
-    session.commit()
-    assert not new_user.access_token
-    assert not new_user.active_token
-    assert new_user.access_token_status == UserTokenStatus.revoked.name
-
-    # User requests token
-    new_user.request_access_token()
-    assert not new_user.access_token
-    assert new_user.access_token_status == UserTokenStatus.requested.name
-
-    # Tries to request again
-    with pytest.raises(Exception) as e:
-        new_user.request_access_token()
-    assert "has already requested an access token" in e.value.args[0]
-
-    # Grant new token
-    new_user.access_token = "new_token"
-    session.commit()
-    assert new_user.access_token == "new_token"
-    assert len(new_user.tokens) == 2
-
-    # Status of most recent access token
-    assert new_user.access_token_status == UserTokenStatus.active.name
 
 
 @mock.patch(
