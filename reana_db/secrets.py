@@ -93,6 +93,8 @@ def get_or_create_bearer_secret(session, model, pk_filter, secret_attr, generate
     :return: ``(value, created)`` -- the row's secret value (freshly
         created if it was empty) and whether this call was the one that
         created it.
+    :raises sqlalchemy.orm.exc.NoResultFound: if the owner row was deleted
+        before it could be locked.
     """
     # populate_existing() is required, not optional decoration: the caller
     # (e.g. an auth decorator) has very likely already loaded this exact row

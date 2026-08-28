@@ -312,6 +312,12 @@ def test_check_and_unique_constraint_names_match_the_naming_convention():
     """
     live = _live_orm_constraint_names()
     cutoff = "20231128_1729_2461610e9698_enforce_naming_convention.py"
+    # This revision shipped before the naming bug was discovered. Migration
+    # history is immutable; the later 3f6c0d2a1b7e repair converges both fresh
+    # and already-stamped databases, so the historical literal must remain.
+    immutable_repaired = {
+        "20260320_0947_06dbbeef6d9b_add_user_resource_quota_period_fields.py"
+    }
     violations = []
     for path in sorted(VERSIONS_DIR.glob("*.py")):
         if path.name <= cutoff:
@@ -345,6 +351,8 @@ def test_check_and_unique_constraint_names_match_the_naming_convention():
             expanded_name = _alembic_expanded_constraint_name(
                 method_name, name, table_name, schema
             )
+            if path.name in immutable_repaired:
+                continue
             if expanded_name not in live_names:
                 violations.append(
                     f"{path.name}: creates {name!r} on {schema}.{table_name}, "
@@ -417,7 +425,10 @@ def test_stamped_identity_constraint_repair_converges_known_states(
         any(fragment in statement for statement in executed)
         for fragment in expected_sql
     )
-    assert create.called is creates
+    identity_creates = [
+        call for call in create.call_args_list if call.args[1] == "user_"
+    ]
+    assert bool(identity_creates) is creates
 
 
 def test_stamped_identity_constraint_repair_removes_redundant_variant():
@@ -440,7 +451,47 @@ def test_stamped_identity_constraint_repair_removes_redundant_variant():
         migration.upgrade()
 
     assert "DROP CONSTRAINT" in execute.call_args.args[0]
-    create.assert_not_called()
+    assert not [call for call in create.call_args_list if call.args[1] == "user_"]
+
+
+@pytest.mark.parametrize(
+    "existing,creates",
+    [
+        ({"ck_user_resource_quota_period_months_positive"}, False),
+        ({"ck_user_resource_ck_user_resource_quota_period_months_positive"}, False),
+        ({"quota_period_months_positive"}, False),
+        (set(), True),
+    ],
+)
+def test_stamped_quota_constraint_repair_converges_known_states(existing, creates):
+    """The forward repair also converges the older user_resource drift."""
+    migration = _load_migration(
+        "20260824_1015_3f6c0d2a1b7e_repair_idp_identity_constraint.py"
+    )
+    connection = mock.Mock()
+
+    def rows(_statement, params):
+        values = (
+            existing
+            if params["table"] == "user_resource"
+            else {"ck_user__idp_identity_complete"}
+        )
+        return _RowsResult([(name,) for name in values])
+
+    connection.execute.side_effect = rows
+    with mock.patch.object(
+        migration.op, "get_bind", return_value=connection
+    ), mock.patch.object(migration.op, "execute") as execute, mock.patch.object(
+        migration.op, "create_check_constraint"
+    ) as create:
+        migration.upgrade()
+
+    quota_creates = [
+        call for call in create.call_args_list if call.args[1] == "user_resource"
+    ]
+    assert bool(quota_creates) is creates
+    if existing and "ck_user_resource_quota_period_months_positive" not in existing:
+        assert any("user_resource" in call.args[0] for call in execute.call_args_list)
 
 
 class _EncryptedValueConnection:

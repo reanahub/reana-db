@@ -64,6 +64,22 @@ def upgrade():
 
 def downgrade():
     """Allow partial IdP identities."""
+    connection = op.get_bind()
+    constraint_exists = connection.execute(
+        sa.text(
+            "SELECT 1 FROM pg_constraint AS con "
+            "JOIN pg_class AS rel ON rel.oid = con.conrelid "
+            "JOIN pg_namespace AS ns ON ns.oid = rel.relnamespace "
+            "WHERE ns.nspname = '__reana' AND rel.relname = 'user_' "
+            "AND con.conname = 'ck_user__idp_identity_complete'"
+        )
+    ).scalar()
+    if not constraint_exists:
+        raise RuntimeError(
+            "Cannot downgrade: expected constraint "
+            "ck_user__idp_identity_complete was not found. Upgrade through "
+            "the repair migration before retrying."
+        )
     op.execute(
         "ALTER TABLE __reana.user_ "
         "DROP CONSTRAINT IF EXISTS ck_user__idp_identity_complete"

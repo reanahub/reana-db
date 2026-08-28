@@ -23,7 +23,7 @@ def upgrade():
         schema="__reana",
     )
     op.create_check_constraint(
-        "quota_period_months_positive",
+        "ck_user_resource_quota_period_months_positive",
         "user_resource",
         "quota_period_months IS NULL OR quota_period_months > 0",
         schema="__reana",
@@ -39,7 +39,7 @@ def downgrade():
     """Remove periodic quota columns from user_resource."""
     op.drop_column("user_resource", "quota_period_start_at", schema="__reana")
     op.drop_constraint(
-        "quota_period_months_positive",
+        "ck_user_resource_quota_period_months_positive",
         "user_resource",
         type_="check",
         schema="__reana",

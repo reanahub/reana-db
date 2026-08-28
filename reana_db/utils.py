@@ -895,8 +895,6 @@ def change_key_encrypted_columns(old_key, _after_ids_fetched=None):
     decrypt_errors = (
         InvalidCiphertextError,
         InvalidPaddingError,
-        ValueError,
-        UnicodeDecodeError,
     )
 
     def _read_value_under_key(key, value_column, id_column, id_value):
