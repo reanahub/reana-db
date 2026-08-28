@@ -508,7 +508,10 @@ class WorkflowService(Base):
     """Workflow Service table."""
 
     __tablename__ = "workflow_service"
-    __table_args__ = {"schema": "__reana"}
+    __table_args__ = (
+        Index(None, "workflow_id"),
+        {"schema": "__reana"},
+    )
 
     workflow_id = Column(UUIDType, ForeignKey("__reana.workflow.id_"), nullable=True)
     service_id = Column(UUIDType, ForeignKey("__reana.service.id_"), primary_key=True)
@@ -541,7 +544,10 @@ class ServiceLog(Base):
     """ServiceLog table."""
 
     __tablename__ = "service_logs"
-    __table_args__ = {"schema": "__reana"}
+    __table_args__ = (
+        Index(None, "service_id"),
+        {"schema": "__reana"},
+    )
 
     id = Column(UUIDType, primary_key=True, default=generate_uuid)
     service_id = Column(
@@ -603,6 +609,7 @@ class Workflow(Base, Timestamp, QuotaBase):
     run_started_at = Column(DateTime)
     run_finished_at = Column(DateTime)
     run_stopped_at = Column(DateTime)
+    logs_pruned_at = Column(DateTime(timezone=True), nullable=True)
     run_number_major = Column(Integer)
     run_number_minor = Column(Integer, default=0)
     job_progress = Column(JSONType, default=dict)
@@ -639,6 +646,11 @@ class Workflow(Base, Timestamp, QuotaBase):
             "name",
             "run_number_major",
             "run_number_minor",
+        ),
+        Index(
+            "ix___reana_workflow_unpruned_logs",
+            "id_",
+            postgresql_where=text("logs_pruned_at IS NULL"),
         ),
         {"schema": "__reana"},
     )

@@ -8,7 +8,7 @@
 
 """REANA-DB models tests."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import mock
@@ -23,9 +23,11 @@ from reana_db.models import (
     ResourceUnit,
     ResourceType,
     JobStatus,
+    ServiceLog,
     UserTokenStatus,
     UserTokenType,
     Workflow,
+    WorkflowService,
     WorkflowResource,
     RunStatus,
     WorkspaceRetentionRule,
@@ -193,6 +195,52 @@ def test_workflow_run_number_assignment(db, session, new_user):
     assert first_workflow_second_restart.run_number == "1.2"
     assert first_workflow_second_restart.run_number_major == 1
     assert first_workflow_second_restart.run_number_minor == 2
+
+
+def test_workflow_logs_pruned_at(db, session, new_user):
+    """Test storing the time at which workflow logs were pruned."""
+    workflow = Workflow(
+        id_=str(uuid4()),
+        name="workflow-with-pruned-logs",
+        owner_id=new_user.id_,
+        reana_specification=[],
+        type_="serial",
+    )
+    session.add(workflow)
+    session.commit()
+
+    assert workflow.logs_pruned_at is None
+
+    pruned_at = datetime(2026, 7, 13, 3, 0, tzinfo=timezone.utc)
+    workflow.logs_pruned_at = pruned_at
+    session.commit()
+    session.refresh(workflow)
+
+    assert workflow.logs_pruned_at == pruned_at
+
+
+def test_log_retention_indexes():
+    """Test indexes supporting the workflow log retention sweep."""
+    workflow_service_indexes = {
+        tuple(column.name for column in index.columns)
+        for index in WorkflowService.__table__.indexes
+    }
+    service_log_indexes = {
+        tuple(column.name for column in index.columns)
+        for index in ServiceLog.__table__.indexes
+    }
+    unpruned_index = next(
+        index
+        for index in Workflow.__table__.indexes
+        if index.name == "ix___reana_workflow_unpruned_logs"
+    )
+
+    assert ("workflow_id",) in workflow_service_indexes
+    assert ("service_id",) in service_log_indexes
+    assert tuple(column.name for column in unpruned_index.columns) == ("id_",)
+    assert str(unpruned_index.dialect_options["postgresql"]["where"]) == (
+        "logs_pruned_at IS NULL"
+    )
 
 
 def test_workflow_retention_rules(db, session, new_user):
