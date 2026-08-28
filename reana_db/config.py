@@ -30,8 +30,20 @@ DB_HOST = os.getenv("REANA_DB_HOST", REANA_INFRASTRUCTURE_COMPONENTS_HOSTNAMES["
 DB_PORT = os.getenv("REANA_DB_PORT", "5432")
 """Database service port."""
 
-DB_SECRET_KEY = os.getenv("REANA_SECRET_KEY", "reana")
-"""Database encryption secret key."""
+DB_SECRET_KEY = os.getenv("REANA_SECRET_KEY")
+"""Database encryption secret key.
+
+No default on purpose: silently falling back to a well-known literal
+(e.g. ``"reana"``) would let a deployment that forgets to set
+``REANA_SECRET_KEY`` encrypt every token/webhook-secret/session-secret
+under a guessable key without any error. ``reana-server`` and
+``reana-workflow-controller`` already fail closed on a missing key via
+their own factory validation, and the Helm chart's ``app-secrets.yaml``
+requires it at install time; this ``None`` default makes any other
+caller (CLI tooling, ad-hoc scripts) fail loudly the first time it
+actually needs to encrypt/decrypt a column, instead of succeeding
+silently under a known key.
+"""
 
 SQLALCHEMY_DATABASE_URI = os.getenv(
     "REANA_SQLALCHEMY_DATABASE_URI",
