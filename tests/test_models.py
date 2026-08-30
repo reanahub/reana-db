@@ -23,6 +23,9 @@ from reana_db.models import (
     ResourceUnit,
     ResourceType,
     JobStatus,
+    Service,
+    ServiceStatus,
+    ServiceType,
     UserTokenStatus,
     UserTokenType,
     Workflow,
@@ -717,8 +720,103 @@ def test_should_cleanup_job(
             )
 
 
+def _make_workflow(session, owner_id, compute_backends, status, uses_dask=False):
+    """Persist a workflow with the given backends, status and optional Dask service."""
+    workflow = Workflow(
+        id_=uuid4(),
+        name="wf_{}".format(uuid4()),
+        owner_id=owner_id,
+        reana_specification=[],
+        type_="serial",
+        status=status,
+        compute_backends=compute_backends,
+    )
+    if uses_dask:
+        workflow.services.append(
+            Service(
+                name=f"dask-{workflow.id_}",
+                uri=f"/{workflow.id_}/dashboard",
+                type_=ServiceType.dask,
+                status=ServiceStatus.created,
+            )
+        )
+    session.add(workflow)
+    session.commit()
+    return workflow
+
+
+def test_count_active_per_backend(db, session, new_user):
+    """count_active_per_backend counts active workflows per backend and Dask.
+
+    Counts are keyed by the backend identifier exactly as stored in
+    ``compute_backends`` (e.g. ``htcondorcern``), derived from the workflows
+    themselves rather than a fixed list of known backends.
+    """
+    # Hybrid (counts towards both kubernetes and htcondorcern), running.
+    _make_workflow(
+        session, new_user.id_, ["kubernetes", "htcondorcern"], RunStatus.running
+    )
+    # External-only HTCondor, pending (still active).
+    _make_workflow(session, new_user.id_, ["htcondorcern"], RunStatus.pending)
+    # Dask-on-Slurm, running.
+    _make_workflow(
+        session, new_user.id_, ["slurmcern"], RunStatus.running, uses_dask=True
+    )
+    # Finished workflow must be ignored.
+    _make_workflow(session, new_user.id_, ["kubernetes"], RunStatus.finished)
+
+    # Scope by owner for deterministic counts (the DB is shared across tests).
+    counts = Workflow.count_active_per_backend(owner_id=new_user.id_)
+    assert counts["kubernetes"] == 1
+    assert counts["htcondorcern"] == 2
+    assert counts["slurmcern"] == 1
+    assert counts["dask"] == 1
+
+    # An unrelated owner has none of these workflows.
+    assert (
+        Workflow.count_active_per_backend(owner_id=uuid4()).get("htcondorcern", 0) == 0
+    )
+
+
+def test_overload_priority_reflects_worst_backend(db, session, new_user):
+    """The overload factor tracks the most-saturated capped resource."""
+    # Saturate only the Dask cap (5) while the external-backend cap stays roomy.
+    with mock.patch(
+        "reana_commons.config.REANA_MAX_CONCURRENT_EXTERNAL_BATCH_WORKFLOWS", 200
+    ), mock.patch("reana_commons.config.REANA_MAX_CONCURRENT_DASK_WORKFLOWS", 5):
+        for _ in range(5):
+            _make_workflow(
+                session,
+                new_user.id_,
+                ["htcondorcern"],
+                RunStatus.running,
+                uses_dask=True,
+            )
+        # 5/5 Dask saturated → overload factor floors at 0.1 even though the
+        # HTCondor cap (5/200) is nowhere near full.
+        assert new_user.get_workflow_overload_priority() == 0.1
+
+
+def test_overload_priority_with_closed_backend(db, session, new_user):
+    """A backend capped at zero saturates any user holding a workflow on it.
+
+    Skipping zero caps as falsy would leave such a user at full priority, which
+    the scheduler would then immediately contradict by admitting nothing.
+    """
+    with mock.patch(
+        "reana_commons.config.REANA_MAX_CONCURRENT_BATCH_WORKFLOWS_PER_BACKEND",
+        {"htcondorcern": 0},
+    ):
+        # No workflow on the closed backend yet, so it does not weigh in.
+        _make_workflow(session, new_user.id_, ["kubernetes"], RunStatus.running)
+        assert new_user.get_workflow_overload_priority() > 0.1
+
+        _make_workflow(session, new_user.id_, ["htcondorcern"], RunStatus.running)
+        assert new_user.get_workflow_overload_priority() == 0.1
+
+
 @pytest.mark.parametrize(
-    "running_workflows, REANA_MAX_CONCURRENT_BATCH_WORKFLOWS,  priority",
+    "running_workflows, max_concurrent_k8s,  priority",
     [
         (2, 10, 0.82),
         (3, 10, 0.73),
@@ -734,13 +832,17 @@ def test_should_cleanup_job(
 def test_get_workflow_overload_priority(
     run_workflow,
     running_workflows,
-    REANA_MAX_CONCURRENT_BATCH_WORKFLOWS,
+    max_concurrent_k8s,
     priority,
 ):
-    """Test logic to determine workflow overload priority factor based on running workflows."""
+    """Test logic to determine workflow overload priority factor based on running workflows.
+
+    ``run_workflow`` produces Kubernetes-only workflows, so the user's overload is
+    driven entirely by the Kubernetes per-backend cap here.
+    """
     with mock.patch(
-        "reana_db.models.REANA_MAX_CONCURRENT_BATCH_WORKFLOWS",
-        REANA_MAX_CONCURRENT_BATCH_WORKFLOWS,
+        "reana_commons.config.REANA_MAX_CONCURRENT_K8S_BATCH_WORKFLOWS",
+        max_concurrent_k8s,
     ):
         for _ in range(running_workflows):
             workflow = run_workflow(finish=False)
