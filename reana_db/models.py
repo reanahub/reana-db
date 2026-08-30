@@ -179,6 +179,9 @@ class User(Base, Timestamp, QuotaBase):
         sync_backref=False,
     )
     audit_logs = relationship("AuditLog", backref="user_")
+    notifications = relationship(
+        "Notification", backref="user_", cascade="all, delete-orphan"
+    )
 
     def __init__(self, access_token=None, **kwargs):
         """Initialize user model."""
@@ -1058,6 +1061,28 @@ class AuditLog(Base, Timestamp):
     def __repr__(self):
         """Audit log string representation."""
         return "<AuditLog {} {}>".format(self.id_, self.action)
+
+
+class Notification(Base, Timestamp):
+    """User notification."""
+
+    __tablename__ = "notification"
+    __table_args__ = (
+        Index("ix_notification_user_id_read_at", "user_id", "read_at"),
+        {"schema": "__reana"},
+    )
+
+    id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
+    user_id = Column(
+        UUIDType, ForeignKey("__reana.user_.id_"), nullable=False, index=True
+    )
+    type_ = Column(String(length=255), nullable=False)
+    payload = Column(JSONType, nullable=False, default=dict)
+    read_at = Column(DateTime)
+
+    def __repr__(self):
+        """User notification string representation."""
+        return "<Notification {} {}>".format(self.id_, self.type_)
 
 
 class WorkspaceRetentionRuleStatus(enum.Enum):
