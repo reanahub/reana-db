@@ -992,7 +992,6 @@ class Job(Base, Timestamp):
     docker_img = Column(String(256))
     cmd = Column(JSONType)
     env_vars = Column(JSONType)
-    deleted = Column(Boolean)
     logs = Column(String, nullable=True)
     started_at = Column(DateTime)
     finished_at = Column(DateTime)
