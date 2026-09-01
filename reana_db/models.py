@@ -1022,20 +1022,6 @@ def job_status_change_listener(job, new_status, old_status, initiator):
         Session.commit()
 
 
-class JobCache(Base, Timestamp):
-    """Job Cache table."""
-
-    __tablename__ = "job_cache"
-    __table_args__ = {"schema": "__reana"}
-
-    id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
-    job_id = Column(UUIDType, ForeignKey("__reana.job.id_"), primary_key=True)
-    parameters = Column(String(1024))
-    result_path = Column(String(1024))
-    workspace_hash = Column(String(1024))
-    access_times = Column(JSONType)
-
-
 class AuditLogAction(enum.Enum):
     """Enumeration of audit log actions."""
 
