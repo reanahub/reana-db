@@ -540,3 +540,110 @@ def test_user_token_removal_is_explicitly_irreversible():
     migration = _load_migration("20260824_1031_a6c2120d5b2b_drop_user_token.py")
     with pytest.raises(RuntimeError, match="irreversible"):
         migration.downgrade()
+
+
+QUOTA_CONSTRAINT = "ck_user_resource_quota_period_months_positive"
+QUOTA_CONSTRAINT_DOUBLE_PREFIXED = "ck_user_resource_" + QUOTA_CONSTRAINT
+QUOTA_CONSTRAINT_LITERAL = "quota_period_months_positive"
+
+
+def _run_quota_constraint_repair(existing):
+    """Run the forward quota repair against the given constraint names."""
+    migration = _load_migration(
+        "20261007_1200_6f8dae13329d_repair_quota_period_constraint_name.py"
+    )
+    connection = mock.Mock()
+    connection.execute.return_value = _RowsResult([(name,) for name in existing])
+    executed = []
+    with mock.patch.object(
+        migration.op, "get_bind", return_value=connection
+    ), mock.patch.object(
+        migration.op, "execute", side_effect=executed.append
+    ), mock.patch.object(
+        migration.op, "create_check_constraint"
+    ) as create:
+        migration.upgrade()
+    query = str(connection.execute.call_args.args[0])
+    assert "ns.nspname = '__reana'" in query
+    assert "rel.relname = 'user_resource'" in query
+    return executed, create
+
+
+@pytest.mark.parametrize(
+    "existing,renamed_from,dropped,creates",
+    [
+        ({QUOTA_CONSTRAINT}, None, set(), False),
+        (
+            {QUOTA_CONSTRAINT_DOUBLE_PREFIXED},
+            QUOTA_CONSTRAINT_DOUBLE_PREFIXED,
+            set(),
+            False,
+        ),
+        ({QUOTA_CONSTRAINT_LITERAL}, QUOTA_CONSTRAINT_LITERAL, set(), False),
+        (set(), None, set(), True),
+        (
+            {QUOTA_CONSTRAINT, QUOTA_CONSTRAINT_DOUBLE_PREFIXED},
+            None,
+            {QUOTA_CONSTRAINT_DOUBLE_PREFIXED},
+            False,
+        ),
+        (
+            {QUOTA_CONSTRAINT_DOUBLE_PREFIXED, QUOTA_CONSTRAINT_LITERAL},
+            QUOTA_CONSTRAINT_DOUBLE_PREFIXED,
+            {QUOTA_CONSTRAINT_LITERAL},
+            False,
+        ),
+    ],
+)
+def test_forward_quota_constraint_repair_converges_known_states(
+    existing, renamed_from, dropped, creates
+):
+    """The forward repair handles every known quota constraint state."""
+    executed, create = _run_quota_constraint_repair(existing)
+
+    renames = [statement for statement in executed if "RENAME CONSTRAINT" in statement]
+    drops = [statement for statement in executed if "DROP CONSTRAINT" in statement]
+    if renamed_from:
+        assert renames == [
+            "ALTER TABLE __reana.user_resource RENAME CONSTRAINT "
+            f'"{renamed_from}" TO "{QUOTA_CONSTRAINT}"'
+        ]
+    else:
+        assert not renames
+    assert len(drops) == len(dropped)
+    assert all(any(f'"{name}"' in drop for drop in drops) for name in dropped)
+    assert create.called is creates
+    if creates:
+        assert create.call_args.args[:2] == (
+            QUOTA_CONSTRAINT_LITERAL,
+            "user_resource",
+        )
+
+
+def test_quota_period_downgrade_tolerates_historical_constraint_names():
+    """The quota downgrade drops the constraint under any of its past names."""
+    migration = _load_migration(
+        "20260320_0947_06dbbeef6d9b_add_user_resource_quota_period_fields.py"
+    )
+    executed = []
+    with mock.patch.object(
+        migration.op, "execute", side_effect=executed.append
+    ), mock.patch.object(migration.op, "drop_column") as drop_column, mock.patch.object(
+        migration.op, "drop_constraint"
+    ) as drop_constraint:
+        migration.downgrade()
+
+    for name in (
+        QUOTA_CONSTRAINT,
+        QUOTA_CONSTRAINT_DOUBLE_PREFIXED,
+        QUOTA_CONSTRAINT_LITERAL,
+    ):
+        assert (
+            f'ALTER TABLE __reana.user_resource DROP CONSTRAINT IF EXISTS "{name}"'
+            in executed
+        )
+    drop_constraint.assert_not_called()
+    assert [call.args[1] for call in drop_column.call_args_list] == [
+        "quota_period_start_at",
+        "quota_period_months",
+    ]
