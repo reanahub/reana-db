@@ -192,6 +192,9 @@ class User(Base, Timestamp, QuotaBase):
         sync_backref=False,
     )
     audit_logs = relationship("AuditLog", backref="user_")
+    notifications = relationship(
+        "Notification", backref="user_", cascade="all, delete-orphan"
+    )
 
     @hybrid_property
     def gitlab_webhook_secret(self):
@@ -1042,6 +1045,34 @@ class AuditLog(Base, Timestamp):
     def __repr__(self):
         """Audit log string representation."""
         return "<AuditLog {} {}>".format(self.id_, self.action)
+
+
+class Notification(Base, Timestamp):
+    """User notification."""
+
+    __tablename__ = "notification"
+    __table_args__ = (
+        Index("ix_notification_user_id_read_at", "user_id", "read_at"),
+        # matches the listing order: unread first, then newest first
+        Index(
+            "ix_notification_user_id_listing",
+            "user_id",
+            text("(read_at IS NOT NULL)"),
+            text("created DESC"),
+            text("id_ DESC"),
+        ),
+        {"schema": "__reana"},
+    )
+
+    id_ = Column(UUIDType, primary_key=True, default=generate_uuid)
+    user_id = Column(UUIDType, ForeignKey("__reana.user_.id_"), nullable=False)
+    type_ = Column(String(length=255), nullable=False)
+    payload = Column(JSONType, nullable=False, default=dict)
+    read_at = Column(DateTime)
+
+    def __repr__(self):
+        """User notification string representation."""
+        return "<Notification {} {}>".format(self.id_, self.type_)
 
 
 class WorkspaceRetentionRuleStatus(enum.Enum):

@@ -27,6 +27,7 @@ from reana_db.models import (
     ALLOWED_WORKFLOW_STATUS_TRANSITIONS,
     AuditLogAction,
     InteractiveSession,
+    Notification,
     Resource,
     ResourceUnit,
     ResourceType,
@@ -315,6 +316,24 @@ def test_initialize_user_quota_limits_uses_user_created_for_period_start(monkeyp
     get_current_period_start.assert_called_once_with(
         reference_start_at=created_at, quota_period_months=3
     )
+
+
+def test_notification_model(db, session, new_user):
+    """Test storing and reading a generic user notification."""
+    notification = Notification(
+        user_id=new_user.id_,
+        type_="workflow_shared",
+        payload={"workflow_id": str(uuid4()), "sharer_email": "owner@reana.io"},
+    )
+    session.add(notification)
+    session.commit()
+
+    stored = session.query(Notification).filter_by(id_=notification.id_).one()
+    assert stored.user_id == new_user.id_
+    assert stored.type_ == "workflow_shared"
+    assert stored.payload["sharer_email"] == "owner@reana.io"
+    assert stored.read_at is None
+    assert stored.created is not None
 
 
 def test_initialize_user_quota_limits_falls_back_to_current_time(monkeypatch):
