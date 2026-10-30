@@ -38,10 +38,14 @@ def upgrade():
 def downgrade():
     """Remove periodic quota columns from user_resource."""
     op.drop_column("user_resource", "quota_period_start_at", schema="__reana")
-    op.drop_constraint(
+    # Depending on its history, a database carries the constraint under the
+    # name created above, the name it was later repaired to, or the bare name.
+    for name in (
         "ck_user_resource_quota_period_months_positive",
-        "user_resource",
-        type_="check",
-        schema="__reana",
-    )
+        "ck_user_resource_ck_user_resource_quota_period_months_positive",
+        "quota_period_months_positive",
+    ):
+        op.execute(
+            f'ALTER TABLE __reana.user_resource DROP CONSTRAINT IF EXISTS "{name}"'
+        )
     op.drop_column("user_resource", "quota_period_months", schema="__reana")
